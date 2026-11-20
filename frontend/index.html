@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Goofish Live Search</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .skeleton { background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+        .modal-bg { background: rgba(0,0,0,0.7); }
+        .badge-sale { background: #10B981; }
+        .badge-sold { background: #EF4444; }
+        .card:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.1); }
+        .card { transition: all 0.2s ease; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <header class="bg-white shadow-sm sticky top-0 z-30">
+        <div class="max-w-6xl mx-auto px-4 py-4">
+            <h1 class="text-2xl font-bold text-orange-500 mb-3">🐟 Goofish Live Search</h1>
+            <form id="searchForm" class="flex flex-col sm:flex-row gap-2">
+                <input id="queryInput" type="text" placeholder="Search Goofish listings..."
+                    class="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400" required>
+                <input id="minPrice" type="number" placeholder="Min ¥" min="0" step="0.01"
+                    class="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400">
+                <input id="maxPrice" type="number" placeholder="Max ¥" min="0" step="0.01"
+                    class="w-24 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400">
+                <select id="sortOrder" class="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400">
+                    <option value="default">Relevance</option>
+                    <option value="price_asc">Price: Low → High</option>
+                    <option value="price_desc">Price: High → Low</option>
+                </select>
+                <button type="submit" class="px-6 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 font-medium">Search</button>
+            </form>
+        </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-4 py-6">
+        <div id="status" class="hidden mb-4 p-3 rounded-lg text-center"></div>
+        <div id="results" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"></div>
+        <div id="loadMore" class="hidden text-center mt-6">
+            <button onclick="loadNextPage()" class="px-8 py-3 bg-orange-500 text-white rounded-lg hover:bg-orange-600 font-medium">Load More</button>
+        </div>
+    </main>
+
+    <div id="imageModal" class="fixed inset-0 modal-bg z-50 hidden flex items-center justify-center p-4" onclick="closeModal(event)">
+        <div class="bg-white rounded-xl max-w-3xl max-h-full overflow-auto p-2 relative" onclick="event.stopPropagation()">
+            <button onclick="closeModal()" class="absolute top-2 right-2 w-8 h-8 bg-gray-200 rounded-full text-lg font-bold hover:bg-gray-300">×</button>
+            <div id="modalImages" class="flex flex-col gap-2 items-center"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
