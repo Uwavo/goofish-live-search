@@ -23,16 +23,16 @@ async def search(
     key = cache_key("search", {"q": q, "sort": sort, "page": page})
     cached = get_cached(key)
     if cached is not None:
-        items = cached
+        result = cached
     else:
         try:
-            items = await search_goofish(q, sort=sort, page_num=page)
+            result = await search_goofish(q, sort=sort, page_num=page)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc))
-        set_cached(key, items)
+        set_cached(key, result)
 
-    items = filter_by_price(items, min_price, max_price)
-    return {"items": items, "total": len(items), "page": page}
+    items = filter_by_price(result["items"], min_price, max_price)
+    return {"items": items, "total": len(items), "page": page, "source": result.get("source", "unknown")}
 
 
 @router.get("/item/{item_id}")

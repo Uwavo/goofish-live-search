@@ -48,7 +48,11 @@ async function fetchResults(append) {
 
         data.items.forEach((item) => resultsDiv.appendChild(createCard(item)));
         loadMoreDiv.classList.toggle("hidden", data.items.length < 10);
-        showStatus(`Found ${data.total} items (page ${data.page})`, "bg-green-100 text-green-800");
+        if (data.source === "feed") {
+            showStatus(`Showing ${data.total} recommended items — Goofish requires login for search-specific results.`, "bg-yellow-100 text-yellow-800");
+        } else {
+            showStatus(`Found ${data.total} items (page ${data.page})`, "bg-green-100 text-green-800");
+        }
     } catch (err) {
         if (!append) resultsDiv.innerHTML = "";
         showStatus(`Error: ${err.message}`, "bg-red-100 text-red-800");
