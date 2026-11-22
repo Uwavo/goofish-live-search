@@ -1,35 +1,48 @@
 import asyncio
 import json
+import logging
 import os
 import random
+import time
 from typing import Any
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 from backend.config import (
     BROWSER_TIMEOUT_MS,
+    COOLDOWN_SECONDS,
     GOOFISH_BASE,
     NAVIGATION_TIMEOUT_MS,
+    REQUEST_JITTER_MAX,
+    REQUEST_JITTER_MIN,
+    SESSION_STATE_PATH,
+    SPAM_KEYWORDS,
     USER_AGENTS,
 )
 from backend.normalizer import normalize_listing
-from backend.rate_limiter import rate_limiter
+
+log = logging.getLogger(__name__)
 
 _playwright = None
 _context: BrowserContext | None = None
-_page: Page | None = None
 _warmed_up = False
+_cooldown_until = 0.0
 
 PROFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "browser_profile")
 
 
+def _session_exists() -> bool:
+    return os.path.isfile(SESSION_STATE_PATH)
+
+
 async def init_browser() -> None:
-    global _playwright, _context, _page, _warmed_up
+    global _playwright, _context, _warmed_up
     os.makedirs(PROFILE_DIR, exist_ok=True)
+    os.makedirs(os.path.dirname(SESSION_STATE_PATH), exist_ok=True)
     _playwright = await async_playwright().start()
     _context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=PROFILE_DIR,
-        headless=False,
+        headless=True,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
@@ -45,46 +58,97 @@ async def init_browser() -> None:
     await _context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
-    _page = await _context.new_page()
-    await _warmup_session()
+    if _session_exists():
+        await _load_session_cookies()
+    _warmed_up = False
 
 
 async def close_browser() -> None:
-    global _playwright, _context, _page, _warmed_up
+    global _playwright, _context, _warmed_up
     if _context:
         await _context.close()
     if _playwright:
         await _playwright.stop()
-    _context = _page = _playwright = None
+    _context = _playwright = None
     _warmed_up = False
+
+
+async def _load_session_cookies() -> None:
+    if not _context or not _session_exists():
+        return
+    try:
+        with open(SESSION_STATE_PATH, "r") as f:
+            state = json.load(f)
+        cookies = state.get("cookies", [])
+        if cookies:
+            await _context.add_cookies(cookies)
+            log.info("Loaded %d session cookies", len(cookies))
+    except Exception as e:
+        log.warning("Failed to load session: %s", e)
+
+
+async def save_session() -> None:
+    if not _context:
+        return
+    try:
+        state = await _context.storage_state()
+        os.makedirs(os.path.dirname(SESSION_STATE_PATH), exist_ok=True)
+        with open(SESSION_STATE_PATH, "w") as f:
+            json.dump(state, f, indent=2)
+        log.info("Session saved")
+    except Exception as e:
+        log.warning("Failed to save session: %s", e)
+
+
+async def clear_session() -> None:
+    if os.path.isfile(SESSION_STATE_PATH):
+        os.remove(SESSION_STATE_PATH)
+    if _context:
+        await _context.clear_cookies()
+    log.info("Session cleared")
+
+
+def get_session_status() -> str:
+    if not _session_exists():
+        return "guest"
+    try:
+        with open(SESSION_STATE_PATH, "r") as f:
+            state = json.load(f)
+        cookies = state.get("cookies", [])
+        auth_cookies = [c for c in cookies if c.get("name") in ("cookie2", "unb", "_m_h5_tk")]
+        return "connected" if auth_cookies else "guest"
+    except Exception:
+        return "guest"
+
+
+async def _jitter() -> None:
+    delay = random.uniform(REQUEST_JITTER_MIN, REQUEST_JITTER_MAX)
+    await asyncio.sleep(delay)
+
+
+def _check_cooldown() -> bool:
+    return time.time() < _cooldown_until
+
+
+def _enter_cooldown() -> None:
+    global _cooldown_until
+    _cooldown_until = time.time() + COOLDOWN_SECONDS
+    log.warning("Entering cooldown for %ds", COOLDOWN_SECONDS)
 
 
 async def _warmup_session() -> None:
     global _warmed_up
-    if _warmed_up or not _page:
+    if _warmed_up or not _context:
         return
+    page = await _context.new_page()
     try:
-        await _page.goto(GOOFISH_BASE, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-        await _page.wait_for_timeout(3000)
-        await _dismiss_overlays(_page)
+        await page.goto(GOOFISH_BASE, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+        await page.wait_for_timeout(2000)
     except Exception:
         pass
+    finally:
+        await page.close()
     _warmed_up = True
-
-
-async def _dismiss_overlays(page: Page) -> None:
-    try:
-        await page.evaluate("""() => {
-            const sels = [
-                'iframe[src*="login"]', 'iframe[src*="passport"]', 'iframe[src*="havana"]',
-                '[class*="login-overlay"]', '[class*="login-mask"]', '[class*="havana"]',
-                '[class*="modal-mask"]', '[class*="login-dialog"]', '[class*="qrcode"]',
-                '[class*="guide-dialog"]',
-            ];
-            sels.forEach(s => document.querySelectorAll(s).forEach(el => el.remove()));
-        }""")
-    except Exception:
-        pass
 
 
 def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
@@ -114,22 +178,23 @@ def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
     return []
 
 
-async def hydrate_item(item_id: str) -> dict | None:
-    """Visit a single Goofish item page and extract its live details."""
-    if not _context:
-        raise RuntimeError("Browser not initialized")
+async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | None:
+    """Search Goofish using authenticated session. Returns None if session is invalid."""
+    if not _context or get_session_status() != "connected":
+        return None
+    if _check_cooldown():
+        return None
 
     await _warmup_session()
-    await rate_limiter.acquire()
+    await _jitter()
 
     page = await _context.new_page()
-    captured: dict | None = None
+    captured_items = []
 
     async def on_response(response):
-        nonlocal captured
         try:
             url = response.url
-            if "h5api" not in url and "mtop" not in url:
+            if "mtop" not in url and "h5api" not in url:
                 return
             ct = response.headers.get("content-type", "")
             if "json" not in ct and "javascript" not in ct:
@@ -138,102 +203,97 @@ async def hydrate_item(item_id: str) -> dict | None:
             if body.startswith(")]}'\n"):
                 body = body[5:]
             data = json.loads(body)
-            ret = str(data.get("ret", []))
-            if "SUCCESS" in ret:
+            ret_list = data.get("ret", [])
+            ret_str = str(ret_list)
+
+            if "SESSION_EXPIRED" in ret_str:
+                log.warning("Session expired")
+                return
+
+            if "SUCCESS" in ret_str:
                 items = _find_items_in_data(data.get("data", {}))
                 for item in items:
-                    iid = str(item.get("itemId", item.get("id", "")))
-                    if iid == item_id:
-                        captured = item
-                        return
-                if not captured and items:
-                    captured = items[0]
+                    captured_items.append(item)
         except Exception:
             pass
 
     page.on("response", on_response)
 
     try:
-        url = f"{GOOFISH_BASE}/item?id={item_id}"
-        await page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-        await _dismiss_overlays(page)
-        await page.wait_for_timeout(4000)
+        from urllib.parse import quote_plus
+        search_url = f"{GOOFISH_BASE}/search?q={quote_plus(query)}"
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+        await page.wait_for_timeout(5000)
 
-        if not captured:
-            init_data = await page.evaluate(
-                "() => typeof window.__INIT_DATA__ !== 'undefined' ? JSON.parse(JSON.stringify(window.__INIT_DATA__)) : null"
-            )
-            if init_data:
-                items = _find_items_in_data(init_data)
-                if items:
-                    captured = items[0]
-
-        if not captured:
-            captured = await _scrape_item_dom(page, item_id)
-
-        rate_limiter.reset()
-        if not captured:
+        if not captured_items:
             return None
-        result = normalize_listing(captured)
-        result["status"] = await _detect_sold_status(page, result.get("status", "unknown"))
-        return result
+
+        results = []
+        seen = set()
+        for raw in captured_items[:max_items]:
+            item = normalize_listing(raw)
+            iid = item.get("id", "")
+            if iid and iid not in seen:
+                seen.add(iid)
+                title_lower = item.get("title", "").lower()
+                if not any(kw in title_lower for kw in SPAM_KEYWORDS):
+                    item["source"] = "goofish_live"
+                    results.append(item)
+
+        return results if results else None
 
     except Exception as exc:
         if "403" in str(exc) or "captcha" in str(exc).lower():
-            rate_limiter.back_off()
-        raise
+            _enter_cooldown()
+        return None
     finally:
         await page.close()
 
 
-async def _scrape_item_dom(page: Page, item_id: str) -> dict | None:
+async def open_login_window() -> dict:
+    """Open a VISIBLE browser window for Alipay QR login. Returns status."""
+    if not _playwright:
+        return {"success": False, "error": "Browser not initialized"}
+
+    login_ctx = await _playwright.chromium.launch_persistent_context(
+        user_data_dir=PROFILE_DIR,
+        headless=False,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-proxy-server",
+        ],
+        user_agent=random.choice(USER_AGENTS),
+        viewport={"width": 500, "height": 700},
+        locale="zh-CN",
+        ignore_default_args=["--enable-automation"],
+    )
+
+    page = await login_ctx.new_page()
     try:
-        return await page.evaluate("""(itemId) => {
-            const title = document.querySelector('[class*="title"], h1')?.textContent?.trim() || '';
-            if (!title) return null;
-            const priceEl = document.querySelector('[class*="price"], [class*="Price"]');
-            const price = priceEl?.textContent?.replace(/[^0-9.]/g, '') || '';
-            const images = Array.from(document.querySelectorAll(
-                '[class*="image"] img, [class*="gallery"] img, [class*="slider"] img, [class*="pic"] img'
-            )).map(img => img.src || img.dataset?.src).filter(Boolean);
-            const seller = document.querySelector('[class*="seller"], [class*="user"] [class*="name"], [class*="nick"]')?.textContent?.trim() || '';
-            const location = document.querySelector('[class*="area"], [class*="location"], [class*="city"]')?.textContent?.trim() || '';
-            const desc = document.querySelector('[class*="desc"], [class*="description"]')?.textContent?.trim() || '';
-            return {itemId, title, price, images, sellerNick: seller, area: location, desc};
-        }""", item_id)
-    except Exception:
-        return None
+        await page.goto(f"{GOOFISH_BASE}/login", wait_until="domcontentloaded", timeout=30000)
 
+        for _ in range(120):
+            await page.wait_for_timeout(1000)
+            cookies = await login_ctx.cookies()
+            auth = [c for c in cookies if c.get("name") in ("cookie2", "unb")]
+            if auth:
+                state = await login_ctx.storage_state()
+                os.makedirs(os.path.dirname(SESSION_STATE_PATH), exist_ok=True)
+                with open(SESSION_STATE_PATH, "w") as f:
+                    json.dump(state, f, indent=2)
+                if _context:
+                    await _context.add_cookies(cookies)
+                await login_ctx.close()
+                return {"success": True, "status": "connected"}
 
-async def _detect_sold_status(page: Page, current: str) -> str:
-    try:
-        text = await page.evaluate("""() => document.body?.innerText?.substring(0, 2000) || ''""")
-        lower = text.lower()
-        if any(k in lower for k in ("已售出", "卖掉了", "已下架", "该宝贝已下架", "sold out")):
-            return "sold"
-        if any(k in lower for k in ("我想要", "立即购买", "buy now")):
-            return "on_sale"
-    except Exception:
-        pass
-    return current
-
-
-async def hydrate_items_batch(item_ids: list[str], concurrency: int = 3) -> list[dict]:
-    """Hydrate multiple items with limited concurrency."""
-    sem = asyncio.Semaphore(concurrency)
-    results = []
-
-    async def _hydrate_one(iid: str):
-        async with sem:
-            try:
-                item = await hydrate_item(iid)
-                if item:
-                    results.append(item)
-            except Exception:
-                pass
-
-    await asyncio.gather(*[_hydrate_one(iid) for iid in item_ids])
-    return results
+        await login_ctx.close()
+        return {"success": False, "error": "Login timed out (2 minutes)"}
+    except Exception as e:
+        try:
+            await login_ctx.close()
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
 
 
 def get_context() -> BrowserContext | None:
@@ -241,4 +301,4 @@ def get_context() -> BrowserContext | None:
 
 
 async def is_browser_ready() -> bool:
-    return _context is not None and _context.browser is not None
+    return _context is not None

@@ -1,4 +1,3 @@
-import asyncio
 import subprocess
 import sys
 import time
@@ -31,15 +30,15 @@ def test_e2e_search_and_results(server):
         page.goto("http://localhost:8111")
         assert "Goofish" in page.title()
 
-        page.fill("#queryInput", "手机壳")
-        page.click('button[type="submit"]')
+        page.fill("#searchInput", "手机壳")
+        page.press("#searchInput", "Enter")
 
         page.wait_for_timeout(15000)
 
-        status = page.text_content("#status")
+        status = page.text_content("#statusBar")
         assert status is not None
 
-        cards = page.query_selector_all(".card")
+        cards = page.query_selector_all(".product-card")
 
         browser.close()
 

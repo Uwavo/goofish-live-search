@@ -1,34 +1,47 @@
 # Goofish Live Search
 
-100% account-free search engine for [Goofish (闲鱼)](https://www.goofish.com) — China's largest second-hand marketplace.
+Dual-mode search engine for [Goofish (闲鱼)](https://www.goofish.com) — China's largest second-hand marketplace. Works in **Guest mode** (no account) or **Full Access** via Alipay QR login.
 
-Discovers real listings via public Bing search indexes, auto-translates English queries to Chinese, and displays results in a clean dashboard. **No Goofish account required.**
+## Features
+
+- **Dual-mode search** — Bing web index (guest) or real-time Goofish API (authenticated)
+- **Headless browser** — all background searches run silently, zero pop-ups
+- **Alipay QR login** — optional; opens a visible window only for the QR scan
+- **Auto translation** — English queries translated to Chinese via MyMemory API
+- **Deal scoring** — items scored 0-100 based on price vs median
+- **CNY → GBP conversion** — toggle dual-currency display
+- **Saved deals** — heart any listing, persisted in SQLite
+- **Anti-ban** — randomized 1.5-3.5s jitter, 15-min cache TTL, cooldown protection
+- **Spam filtering** — hides junk listings (维修, 主板坏, 配件机, etc.)
+- **Vinted-style UI** — polished dashboard with sidebar, category tabs, filters, detail drawer
 
 ## How It Works
 
-1. **Search** — Type an English or Chinese query (e.g. "sony camera", "手机壳")
-2. **Translate** — English queries are automatically translated to Chinese via MyMemory API
-3. **Discover** — Bing is searched for `site:goofish.com/item <query>` across multiple pages, redirect links are followed to extract real item IDs
-4. **Display** — Item titles, descriptions, and prices (when available) are extracted from Bing search result snippets
+### Guest Mode (No Account)
+1. Type an English or Chinese query
+2. Query is translated to Chinese via MyMemory API
+3. Bing is searched for `site:goofish.com/item <query>` across 2 pages
+4. Redirect links are followed to extract real item IDs
+5. Titles, descriptions, and prices extracted from Bing snippets
+
+### Full Access (Alipay Linked)
+1. Click "Link Alipay Account" → scan QR code with Alipay app
+2. Session cookies saved locally to `./data/session_state.json`
+3. Searches use Goofish's internal `mtop` API for real-time results
+4. Full product images, exact prices, seller info, 20+ results
 
 ## Architecture
 
 ```
-Frontend (Tailwind CSS) → FastAPI Backend → Playwright Browser
-                                              ↓
-                                         Bing Search (pages 1 & 2)
-                                              ↓
-                                      Redirect Following
-                                              ↓
-                                    Item ID + Metadata Extraction
+Frontend (Tailwind CSS)  →  FastAPI Backend  →  Playwright Chromium (headless)
+                                                  ↓
+                              ┌─────────────────────────────────────┐
+                              │ Connected? → mtop API (real-time)   │
+                              │ Guest?     → Bing site: search      │
+                              └─────────────────────────────────────┘
+                                                  ↓
+                              Deal scoring + GBP conversion + SQLite
 ```
-
-- **Backend:** FastAPI + Uvicorn on port `1212`
-- **Browser:** Playwright Chromium with persistent profile (anti-detection)
-- **Translation:** MyMemory API (free, no key required)
-- **Discovery:** Bing web search with multi-page scraping and deduplication
-- **Price extraction:** Regex parser for Chinese currency formats (¥1200, 1200元, 售价1200, etc.)
-- **Cache:** In-memory TTL cache for repeat queries
 
 ## Prerequisites
 
@@ -54,50 +67,58 @@ Open [http://localhost:1212](http://localhost:1212)
 
 ## API Endpoints
 
-| Endpoint | Description |
-|---|---|
-| `GET /api/health` | Health check + browser status |
-| `GET /api/search?q=keyword&min_price=10&max_price=100` | Search listings |
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/health` | GET | Health check + browser + session status |
+| `/api/session/status` | GET | Guest / connected / expired |
+| `/api/session/login` | POST | Open Alipay QR login window |
+| `/api/session/logout` | POST | Clear session cookies |
+| `/api/search?q=keyword` | GET | Dual-mode search (params: min_price, max_price, sort, category, filter_spam) |
+| `/api/deals/save` | POST | Save a deal |
+| `/api/deals/{item_id}` | DELETE | Remove saved deal |
+| `/api/deals` | GET | List saved deals |
 
 ## Tests
 
 ```bash
-# Unit tests
-python -m pytest tests/ --ignore=tests/test_live.py -q
+# Unit tests (48 tests)
+python -m pytest tests/ --ignore=tests/test_live.py --ignore=tests/test_e2e.py -q
 
-# Live end-to-end test (requires internet + Chromium)
-python tests/verify_live.py
+# E2E test (requires running server + Chromium)
+python -m pytest tests/test_e2e.py -v
 ```
 
 ## Limitations
 
-- **No product images** — Goofish blocks item page content without login; images are not indexed by search engines
-- **~10 results per query** — limited by what Bing has indexed for goofish.com
-- **Price extraction is best-effort** — prices only appear when mentioned in the Bing search snippet text
+- **No product images in guest mode** — Goofish blocks item content without login
+- **~10 results per query in guest mode** — limited by Bing's index of goofish.com
+- **Price extraction is best-effort** — prices only appear in Bing snippet text
 
 ## Project Structure
 
 ```
 backend/
-  main.py          — FastAPI app + lifespan
-  routes.py        — /api/search, /api/health
-  discovery.py     — Bing multi-page search + redirect following
-  translator.py    — English→Chinese via MyMemory API
-  browser_engine.py— Playwright persistent context
-  normalizer.py    — Price parsing, image URL cleaning
-  cache.py         — In-memory TTL cache
-  rate_limiter.py  — Request throttling
-  config.py        — Port 1212, timeouts, user agents
+  main.py           — FastAPI app + lifespan
+  routes.py         — All API endpoints (search, session, deals)
+  discovery.py      — Bing multi-page search + redirect following
+  browser_engine.py — Playwright headless engine + session management
+  translator.py     — English→Chinese via MyMemory API
+  normalizer.py     — Price parsing, image URL cleaning
+  currency.py       — CNY↔GBP conversion
+  deals.py          — Deal scoring + SQLite saved deals
+  cache.py          — In-memory TTL cache (15 min)
+  config.py         — All settings (port, jitter, categories, spam keywords)
 frontend/
-  index.html       — Dashboard UI (Tailwind CSS)
-  app.js           — Search + card rendering
+  index.html        — Vinted-style dashboard (Tailwind CSS)
+  app.js            — Search, cards, drawer, session, saved deals
 tests/
-  test_*.py        — Unit tests
-  verify_live.py   — Live E2E verification
+  test_*.py         — 48 unit tests
+  test_e2e.py       — Playwright E2E tests
+data/               — (gitignored) session state + saved deals DB
 ```
 
 ## Tech Stack
 
-- **Backend:** Python, FastAPI, Playwright
+- **Backend:** Python, FastAPI, Playwright, SQLite
 - **Frontend:** HTML, Tailwind CSS, vanilla JavaScript
-- **Testing:** pytest
+- **Testing:** pytest (48 unit tests)
