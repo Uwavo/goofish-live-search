@@ -1,4 +1,4 @@
-from backend.discovery import _extract_ids, extract_item_id_from_url
+from backend.discovery import _extract_ids, _extract_price, extract_item_id_from_url
 
 
 def test_extract_ids_from_html():
@@ -36,3 +36,33 @@ def test_extract_item_id_from_url():
 
 def test_extract_ids_no_match():
     assert _extract_ids("<html><body>no items</body></html>") == []
+
+
+# Price extraction tests
+
+def test_price_yen_symbol():
+    assert _extract_price("¥1200") == 1200.0
+    assert _extract_price("￥1,200.00") == 1200.0
+    assert _extract_price("价格 ¥ 999") == 999.0
+
+
+def test_price_yuan_suffix():
+    assert _extract_price("售价1200元") == 1200.0
+    assert _extract_price("只要888元包邮") == 888.0
+
+
+def test_price_chinese_prefix():
+    assert _extract_price("售价1200") == 1200.0
+    assert _extract_price("出1200") == 1200.0
+    assert _extract_price("标价7200") == 7200.0
+    assert _extract_price("到手价3300") == 3300.0
+
+
+def test_price_with_commas():
+    assert _extract_price("¥12,500") == 12500.0
+    assert _extract_price("售价1,200.50") == 1200.5
+
+
+def test_price_no_match():
+    assert _extract_price("no price here") is None
+    assert _extract_price("") is None
