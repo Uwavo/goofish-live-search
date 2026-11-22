@@ -54,7 +54,7 @@ def normalize_listing(raw: dict) -> dict:
         "seller": data.get("sellerNick", data.get("seller", {}).get("nick", "")),
         "location": data.get("area", data.get("location", "")),
         "status": detect_status(data.get("status", data.get("itemStatus"))),
-        "url": f"https://www.goofish.com/item/{data.get('itemId', data.get('id', ''))}",
+        "url": f"https://www.goofish.com/item?id={data.get('itemId', data.get('id', ''))}",
         "description": data.get("desc", data.get("description", "")),
     }
 

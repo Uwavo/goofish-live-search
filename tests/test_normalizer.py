@@ -72,7 +72,7 @@ def test_normalize_listing():
     assert result["price"] == 50.0
     assert result["images"] == ["https://img.goofish.com/a.jpg"]
     assert result["seller"] == "seller1"
-    assert result["url"] == "https://www.goofish.com/item/123"
+    assert result["url"] == "https://www.goofish.com/item?id=123"
 
 
 def test_filter_by_price():

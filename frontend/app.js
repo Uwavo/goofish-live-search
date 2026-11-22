@@ -18,15 +18,15 @@ form.addEventListener("submit", (e) => {
 async function fetchResults(append) {
     const minPrice = document.getElementById("minPrice").value;
     const maxPrice = document.getElementById("maxPrice").value;
-    const sort = document.getElementById("sortOrder").value;
+    const includeSold = document.getElementById("includeSold").checked;
 
     if (!append) {
         resultsDiv.innerHTML = Array(8).fill('<div class="skeleton rounded-xl h-72"></div>').join("");
     }
 
-    showStatus("Searching Goofish...", "bg-blue-100 text-blue-800");
+    showStatus("Discovering listings via public search indexes...", "bg-blue-100 text-blue-800");
 
-    const params = new URLSearchParams({ q: currentQuery, sort, page: currentPage });
+    const params = new URLSearchParams({ q: currentQuery, page: currentPage, include_sold: includeSold });
     if (minPrice) params.set("min_price", minPrice);
     if (maxPrice) params.set("max_price", maxPrice);
 
@@ -41,18 +41,25 @@ async function fetchResults(append) {
         if (!append) resultsDiv.innerHTML = "";
 
         if (data.items.length === 0 && !append) {
-            showStatus("No results found.", "bg-yellow-100 text-yellow-800");
+            const extra = data.query_translated && data.query_translated !== currentQuery
+                ? ` (translated: "${data.query_translated}")`
+                : "";
+            showStatus(`No live listings found${extra}. Try different keywords.`, "bg-yellow-100 text-yellow-800");
             loadMoreDiv.classList.add("hidden");
             return;
         }
 
         data.items.forEach((item) => resultsDiv.appendChild(createCard(item)));
         loadMoreDiv.classList.toggle("hidden", data.items.length < 10);
-        if (data.source === "feed") {
-            showStatus(`Showing ${data.total} recommended items — Goofish requires login for search-specific results.`, "bg-yellow-100 text-yellow-800");
-        } else {
-            showStatus(`Found ${data.total} items (page ${data.page})`, "bg-green-100 text-green-800");
-        }
+
+        const discovered = data.discovered || data.total;
+        const translated = data.query_translated && data.query_translated !== currentQuery
+            ? ` | Translated: "${data.query_translated}"`
+            : "";
+        showStatus(
+            `Discovered ${discovered} indexed listings, ${data.total} verified live${translated}`,
+            "bg-green-100 text-green-800"
+        );
     } catch (err) {
         if (!append) resultsDiv.innerHTML = "";
         showStatus(`Error: ${err.message}`, "bg-red-100 text-red-800");
@@ -79,7 +86,9 @@ function createCard(item) {
             ${thumb ? `<img src="${escapeHtml(thumb)}" alt="" class="w-full h-48 object-cover bg-gray-100" loading="lazy"
                 onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22><rect fill=%22%23eee%22 width=%221%22 height=%221%22/></svg>'"
                 onclick="showImages(${escapeAttr(JSON.stringify(item.images || []))}); event.stopPropagation()">` :
-                `<div class="w-full h-48 bg-gray-100 flex items-center justify-center text-gray-400">No Image</div>`}
+                `<div class="w-full h-32 bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center p-3">
+                    <p class="text-xs text-gray-500 line-clamp-4" style="-webkit-line-clamp:4; display:-webkit-box; -webkit-box-orient:vertical; overflow:hidden;">${escapeHtml(item.description || 'No preview available')}</p>
+                </div>`}
             <span class="absolute top-2 right-2 ${badgeClass} text-white text-xs px-2 py-1 rounded-full">${badgeText}</span>
         </div>
         <div class="p-3">

@@ -10,10 +10,9 @@ from backend.config import (
     BROWSER_TIMEOUT_MS,
     GOOFISH_BASE,
     NAVIGATION_TIMEOUT_MS,
-    SCROLL_DELAY_MS,
     USER_AGENTS,
 )
-from backend.normalizer import normalize_listing, normalize_search_results
+from backend.normalizer import normalize_listing
 from backend.rate_limiter import rate_limiter
 
 _playwright = None
@@ -64,9 +63,12 @@ async def _warmup_session() -> None:
     global _warmed_up
     if _warmed_up or not _page:
         return
-    await _page.goto(GOOFISH_BASE, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-    await _page.wait_for_timeout(4000)
-    await _dismiss_overlays(_page)
+    try:
+        await _page.goto(GOOFISH_BASE, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+        await _page.wait_for_timeout(3000)
+        await _dismiss_overlays(_page)
+    except Exception:
+        pass
     _warmed_up = True
 
 
@@ -90,7 +92,7 @@ def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
         return []
     if isinstance(data, list):
         if data and isinstance(data[0], dict) and any(
-            k in data[0] for k in ("itemId", "title", "price", "id", "item2")
+            k in data[0] for k in ("itemId", "title", "price", "id")
         ):
             return data
         for item in data:
@@ -100,7 +102,7 @@ def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
     elif isinstance(data, dict):
         if "itemId" in data and "title" in data:
             return [data]
-        for key in ("resultList", "items", "itemList", "pcSearchResult", "data", "resultValue"):
+        for key in ("resultList", "items", "itemList", "data", "resultValue"):
             if key in data:
                 found = _find_items_in_data(data[key], depth + 1)
                 if found:
@@ -112,136 +114,8 @@ def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
     return []
 
 
-def _extract_feed_items(data: dict) -> list[dict]:
-    """Extract items from the feed API cardList structure."""
-    items = []
-    cards = data.get("data", {}).get("cardList", [])
-    for card in cards:
-        cd = card.get("cardData", {})
-        dp = cd.get("detailParams", {})
-        item_id = dp.get("itemId", "")
-        if not item_id:
-            continue
-        images_raw = []
-        pic = dp.get("picUrl", "")
-        if pic:
-            images_raw.append(pic)
-        items.append({
-            "itemId": item_id,
-            "title": dp.get("title", ""),
-            "price": dp.get("soldPrice", cd.get("soldPrice", "")),
-            "images": images_raw,
-            "sellerNick": dp.get("userNick", ""),
-            "area": cd.get("city", ""),
-            "url": f"https://www.goofish.com/item/{item_id}",
-        })
-    return items
-
-
-async def _type_search(page: Page, query: str) -> None:
-    """Type query into the real search input and press Enter."""
-    input_sels = [
-        'input[class*="search-input"]',
-        'input[placeholder*="搜索"]', 'input[placeholder*="search"]',
-        '#search-input', 'input[name="q"]', 'input[type="search"]',
-        '[class*="search"] input', '[class*="Search"] input',
-    ]
-    for sel in input_sels:
-        try:
-            inp = page.locator(sel).first
-            if await inp.is_visible(timeout=1500):
-                await inp.click()
-                await inp.fill("")
-                await asyncio.sleep(0.3)
-                await inp.type(query, delay=random.randint(50, 120))
-                await asyncio.sleep(0.3)
-                await inp.press("Enter")
-                return
-        except Exception:
-            continue
-    await page.goto(f"{GOOFISH_BASE}/search?q={query}", wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-
-
-async def search_goofish(
-    query: str, sort: str = "default", page_num: int = 1
-) -> list[dict]:
-    if not _context or not _page:
-        raise RuntimeError("Browser not initialized")
-
-    await _warmup_session()
-    await rate_limiter.acquire()
-
-    page = _page
-    captured_items: list[dict] = []
-    feed_items: list[dict] = []
-
-    async def on_response(response):
-        try:
-            url = response.url
-            if "h5api" not in url and "mtop" not in url:
-                return
-            ct = response.headers.get("content-type", "")
-            if "json" not in ct and "javascript" not in ct:
-                return
-            body = await response.text()
-            if body.startswith(")]}'\n"):
-                body = body[5:]
-            data = json.loads(body)
-            api = str(data.get("api", ""))
-            ret = str(data.get("ret", []))
-
-            if "SUCCESS" in ret:
-                if "search" in api.lower() and "suggest" not in api.lower() and "shade" not in api.lower() and "activate" not in api.lower():
-                    items = _find_items_in_data(data.get("data", {}))
-                    if items:
-                        captured_items.extend(items)
-                elif "feed" in api.lower():
-                    feed_items.extend(_extract_feed_items(data))
-        except Exception:
-            pass
-
-    page.on("response", on_response)
-
-    try:
-        await _type_search(page, query)
-        await _dismiss_overlays(page)
-        await page.wait_for_timeout(6000)
-
-        for _ in range(max(0, page_num - 1)):
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await page.wait_for_timeout(SCROLL_DELAY_MS)
-
-        if captured_items:
-            rate_limiter.reset()
-            return {"source": "search", "items": normalize_search_results(captured_items)}
-
-        if feed_items:
-            rate_limiter.reset()
-            return {"source": "feed", "items": normalize_search_results(feed_items)}
-
-        rate_limiter.reset()
-        return {"source": "none", "items": []}
-
-    except Exception as exc:
-        if "403" in str(exc) or "captcha" in str(exc).lower():
-            rate_limiter.back_off()
-        raise
-    finally:
-        page.remove_listener("response", on_response)
-
-
-def _filter_feed_by_query(items: list[dict], query: str) -> list[dict]:
-    """Best-effort filter: keep items whose title contains any query character sequence."""
-    chars = list(query.lower())
-    filtered = []
-    for item in items:
-        title = str(item.get("title", "")).lower()
-        if any(c in title for c in chars if c.strip()):
-            filtered.append(item)
-    return filtered
-
-
-async def get_item_detail(item_id: str) -> dict | None:
+async def hydrate_item(item_id: str) -> dict | None:
+    """Visit a single Goofish item page and extract its live details."""
     if not _context:
         raise RuntimeError("Browser not initialized")
 
@@ -249,10 +123,10 @@ async def get_item_detail(item_id: str) -> dict | None:
     await rate_limiter.acquire()
 
     page = await _context.new_page()
-    captured_detail: dict | None = None
+    captured: dict | None = None
 
     async def on_response(response):
-        nonlocal captured_detail
+        nonlocal captured
         try:
             url = response.url
             if "h5api" not in url and "mtop" not in url:
@@ -267,51 +141,42 @@ async def get_item_detail(item_id: str) -> dict | None:
             ret = str(data.get("ret", []))
             if "SUCCESS" in ret:
                 items = _find_items_in_data(data.get("data", {}))
-                if items:
-                    for item in items:
-                        if str(item.get("itemId", item.get("id", ""))) == item_id:
-                            captured_detail = item
-                            return
-                    if not captured_detail:
-                        captured_detail = items[0]
+                for item in items:
+                    iid = str(item.get("itemId", item.get("id", "")))
+                    if iid == item_id:
+                        captured = item
+                        return
+                if not captured and items:
+                    captured = items[0]
         except Exception:
             pass
 
     page.on("response", on_response)
 
     try:
-        url = f"{GOOFISH_BASE}/item/{item_id}"
+        url = f"{GOOFISH_BASE}/item?id={item_id}"
         await page.goto(url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
         await _dismiss_overlays(page)
-        await page.wait_for_timeout(5000)
+        await page.wait_for_timeout(4000)
 
-        if not captured_detail:
+        if not captured:
             init_data = await page.evaluate(
                 "() => typeof window.__INIT_DATA__ !== 'undefined' ? JSON.parse(JSON.stringify(window.__INIT_DATA__)) : null"
             )
             if init_data:
                 items = _find_items_in_data(init_data)
                 if items:
-                    captured_detail = items[0]
+                    captured = items[0]
 
-        if not captured_detail:
-            detail = await page.evaluate("""() => {
-                const title = document.querySelector('[class*="title"], h1')?.textContent?.trim() || '';
-                const price = document.querySelector('[class*="price"], [class*="Price"]')?.textContent?.replace(/[^0-9.]/g, '') || '';
-                const images = Array.from(document.querySelectorAll('[class*="image"] img, [class*="gallery"] img, [class*="slider"] img'))
-                    .map(img => img.src).filter(Boolean);
-                const seller = document.querySelector('[class*="seller"], [class*="user"] [class*="name"]')?.textContent?.trim() || '';
-                const location = document.querySelector('[class*="area"], [class*="location"]')?.textContent?.trim() || '';
-                const desc = document.querySelector('[class*="desc"], [class*="description"]')?.textContent?.trim() || '';
-                if (!title) return null;
-                return {title, price, images, seller, location, desc};
-            }""")
-            if detail:
-                detail["itemId"] = item_id
-                captured_detail = detail
+        if not captured:
+            captured = await _scrape_item_dom(page, item_id)
 
         rate_limiter.reset()
-        return normalize_listing(captured_detail) if captured_detail else None
+        if not captured:
+            return None
+        result = normalize_listing(captured)
+        result["status"] = await _detect_sold_status(page, result.get("status", "unknown"))
+        return result
 
     except Exception as exc:
         if "403" in str(exc) or "captcha" in str(exc).lower():
@@ -319,6 +184,60 @@ async def get_item_detail(item_id: str) -> dict | None:
         raise
     finally:
         await page.close()
+
+
+async def _scrape_item_dom(page: Page, item_id: str) -> dict | None:
+    try:
+        return await page.evaluate("""(itemId) => {
+            const title = document.querySelector('[class*="title"], h1')?.textContent?.trim() || '';
+            if (!title) return null;
+            const priceEl = document.querySelector('[class*="price"], [class*="Price"]');
+            const price = priceEl?.textContent?.replace(/[^0-9.]/g, '') || '';
+            const images = Array.from(document.querySelectorAll(
+                '[class*="image"] img, [class*="gallery"] img, [class*="slider"] img, [class*="pic"] img'
+            )).map(img => img.src || img.dataset?.src).filter(Boolean);
+            const seller = document.querySelector('[class*="seller"], [class*="user"] [class*="name"], [class*="nick"]')?.textContent?.trim() || '';
+            const location = document.querySelector('[class*="area"], [class*="location"], [class*="city"]')?.textContent?.trim() || '';
+            const desc = document.querySelector('[class*="desc"], [class*="description"]')?.textContent?.trim() || '';
+            return {itemId, title, price, images, sellerNick: seller, area: location, desc};
+        }""", item_id)
+    except Exception:
+        return None
+
+
+async def _detect_sold_status(page: Page, current: str) -> str:
+    try:
+        text = await page.evaluate("""() => document.body?.innerText?.substring(0, 2000) || ''""")
+        lower = text.lower()
+        if any(k in lower for k in ("已售出", "卖掉了", "已下架", "该宝贝已下架", "sold out")):
+            return "sold"
+        if any(k in lower for k in ("我想要", "立即购买", "buy now")):
+            return "on_sale"
+    except Exception:
+        pass
+    return current
+
+
+async def hydrate_items_batch(item_ids: list[str], concurrency: int = 3) -> list[dict]:
+    """Hydrate multiple items with limited concurrency."""
+    sem = asyncio.Semaphore(concurrency)
+    results = []
+
+    async def _hydrate_one(iid: str):
+        async with sem:
+            try:
+                item = await hydrate_item(iid)
+                if item:
+                    results.append(item)
+            except Exception:
+                pass
+
+    await asyncio.gather(*[_hydrate_one(iid) for iid in item_ids])
+    return results
+
+
+def get_context() -> BrowserContext | None:
+    return _context
 
 
 async def is_browser_ready() -> bool:
