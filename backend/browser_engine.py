@@ -30,9 +30,17 @@ _cooldown_until = 0.0
 
 PROFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "browser_profile")
 
+AUTH_COOKIE_NAMES = ("cookie2", "unb", "sgcookie")
+GUEST_COOKIE_NAMES = ("cna", "_m_h5_tk", "_m_h5_tk_enc", "t")
+
 
 def _session_exists() -> bool:
     return os.path.isfile(SESSION_STATE_PATH)
+
+
+def _has_auth_cookies(cookies: list[dict]) -> bool:
+    names = {c.get("name") for c in cookies}
+    return bool(names & set(AUTH_COOKIE_NAMES))
 
 
 async def init_browser() -> None:
@@ -60,12 +68,15 @@ async def init_browser() -> None:
     )
     if _session_exists():
         await _load_session_cookies()
+        status = get_session_status()
+        log.info("Session restored on startup: %s", status)
     _warmed_up = False
 
 
 async def close_browser() -> None:
     global _playwright, _context, _warmed_up
     if _context:
+        await save_session()
         await _context.close()
     if _playwright:
         await _playwright.stop()
@@ -115,8 +126,9 @@ def get_session_status() -> str:
         with open(SESSION_STATE_PATH, "r") as f:
             state = json.load(f)
         cookies = state.get("cookies", [])
-        auth_cookies = [c for c in cookies if c.get("name") in ("cookie2", "unb", "_m_h5_tk")]
-        return "connected" if auth_cookies else "guest"
+        if _has_auth_cookies(cookies):
+            return "connected"
+        return "guest"
     except Exception:
         return "guest"
 
@@ -179,7 +191,6 @@ def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
 
 
 async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | None:
-    """Search Goofish using authenticated session. Returns None if session is invalid."""
     if not _context or get_session_status() != "connected":
         return None
     if _check_cooldown():
@@ -251,19 +262,22 @@ async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | 
 
 
 async def open_login_window() -> dict:
-    """Open a VISIBLE browser window for Alipay QR login. Returns status."""
+    """Open a VISIBLE browser window for Alipay QR login with 5-minute timeout."""
     if not _playwright:
         return {"success": False, "error": "Browser not initialized"}
 
+    login_profile = os.path.join(os.path.dirname(PROFILE_DIR), "login_profile")
+    os.makedirs(login_profile, exist_ok=True)
+
     login_ctx = await _playwright.chromium.launch_persistent_context(
-        user_data_dir=PROFILE_DIR,
+        user_data_dir=login_profile,
         headless=False,
         args=[
             "--disable-blink-features=AutomationControlled",
             "--no-proxy-server",
         ],
         user_agent=random.choice(USER_AGENTS),
-        viewport={"width": 500, "height": 700},
+        viewport={"width": 520, "height": 720},
         locale="zh-CN",
         ignore_default_args=["--enable-automation"],
     )
@@ -271,24 +285,74 @@ async def open_login_window() -> dict:
     page = await login_ctx.new_page()
     try:
         await page.goto(f"{GOOFISH_BASE}/login", wait_until="domcontentloaded", timeout=30000)
+        await page.wait_for_timeout(2000)
 
-        for _ in range(120):
+        # Try to click the Alipay login tab
+        for selector in [
+            'text="支付宝"',
+            'text="支付宝登录"',
+            '[data-nick="支付宝"]',
+            '.alipay-login',
+            'a:has-text("支付宝")',
+            'div:has-text("支付宝"):not(:has(div:has-text("支付宝")))',
+        ]:
+            try:
+                el = page.locator(selector).first
+                if await el.is_visible(timeout=1500):
+                    await el.click()
+                    log.info("Clicked Alipay login tab: %s", selector)
+                    await page.wait_for_timeout(1500)
+                    break
+            except Exception:
+                continue
+
+        # Also try inside iframes
+        for frame in page.frames:
+            for selector in ['text="支付宝"', 'text="支付宝登录"', 'a:has-text("支付宝")']:
+                try:
+                    el = frame.locator(selector).first
+                    if await el.is_visible(timeout=1000):
+                        await el.click()
+                        log.info("Clicked Alipay tab in iframe: %s", selector)
+                        await page.wait_for_timeout(1500)
+                        break
+                except Exception:
+                    continue
+
+        # Poll for REAL auth cookies (5 min timeout), ignoring guest cookies
+        for tick in range(300):
             await page.wait_for_timeout(1000)
+
             cookies = await login_ctx.cookies()
-            auth = [c for c in cookies if c.get("name") in ("cookie2", "unb")]
-            if auth:
+            if _has_auth_cookies(cookies):
+                current_url = page.url
+                log.info("Auth cookies detected, current URL: %s", current_url)
+
+                # Wait a moment for all cookies to settle
+                await page.wait_for_timeout(2000)
+                cookies = await login_ctx.cookies()
+
+                # Save session
                 state = await login_ctx.storage_state()
                 os.makedirs(os.path.dirname(SESSION_STATE_PATH), exist_ok=True)
                 with open(SESSION_STATE_PATH, "w") as f:
                     json.dump(state, f, indent=2)
+
+                # Inject cookies into the headless search context
                 if _context:
-                    await _context.add_cookies(cookies)
+                    auth_cookies = [c for c in cookies if c.get("name") in AUTH_COOKIE_NAMES or c.get("domain", "").endswith("goofish.com") or c.get("domain", "").endswith("taobao.com")]
+                    if auth_cookies:
+                        await _context.add_cookies(auth_cookies)
+
+                log.info("Login successful, session saved")
                 await login_ctx.close()
                 return {"success": True, "status": "connected"}
 
+        log.warning("Login timed out after 5 minutes")
         await login_ctx.close()
-        return {"success": False, "error": "Login timed out (2 minutes)"}
+        return {"success": False, "error": "Login timed out (5 minutes). Please try again."}
     except Exception as e:
+        log.error("Login error: %s", e)
         try:
             await login_ctx.close()
         except Exception:
