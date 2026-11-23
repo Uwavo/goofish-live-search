@@ -36,13 +36,16 @@ def configured():
 # ── normalize_item ──
 
 SAMPLE_ITEM = {
-    "item_id": "123456789012",
+    "id": "123456789012",
     "title": "iPhone 15 Pro 256GB",
     "price": "4599.00",
-    "images": ["//img.alicdn.com/abc.jpg", "https://img2.example.com/def.jpg"],
-    "seller": {"nick": "好卖家", "area": "深圳"},
+    "imageUrls": ["//img.alicdn.com/abc.jpg", "https://img2.example.com/def.jpg"],
+    "seller": {"nick": "好卖家"},
+    "city": "深圳",
     "status": "on_sale",
     "desc": "Full box, good condition",
+    "condition": "95新",
+    "specs": {"storage": "256GB", "battery_health": "92%"},
 }
 
 
@@ -57,6 +60,8 @@ def test_normalize_item_basic():
     assert result["status"] == "on_sale"
     assert result["source"] == "rapidapi"
     assert "123456789012" in result["url"]
+    assert result["condition"] == "95新"
+    assert result["specs"]["storage"] == "256GB"
 
 
 def test_normalize_item_sold_status():
@@ -92,12 +97,12 @@ def test_normalize_item_string_seller():
 
 
 def test_normalize_item_empty_images():
-    item = {**SAMPLE_ITEM, "images": []}
+    item = {**SAMPLE_ITEM, "imageUrls": []}
     assert rc.normalize_item(item)["images"] == []
 
 
 def test_normalize_item_dict_images():
-    item = {**SAMPLE_ITEM, "images": [{"url": "//img.example.com/a.jpg"}]}
+    item = {**SAMPLE_ITEM, "imageUrls": [{"url": "//img.example.com/a.jpg"}]}
     result = rc.normalize_item(item)
     assert result["images"] == ["https://img.example.com/a.jpg"]
 
@@ -128,7 +133,9 @@ def test_sort_map_covers_ui_values():
 
 MOCK_SEARCH_RESPONSE = {
     "data": {
-        "items": [SAMPLE_ITEM, {**SAMPLE_ITEM, "item_id": "999", "title": "MacBook"}],
+        "items": [SAMPLE_ITEM, {**SAMPLE_ITEM, "id": "999", "title": "MacBook"}],
+        "resolvedKeyword": "iphone 15",
+        "count": 2,
     }
 }
 
@@ -210,7 +217,7 @@ def test_batch_returns_empty_without_key():
 
 
 def test_batch_success(configured):
-    batch_resp = {"data": [SAMPLE_ITEM, {**SAMPLE_ITEM, "item_id": "456", "title": "iPad"}]}
+    batch_resp = {"data": {"items": [SAMPLE_ITEM, {**SAMPLE_ITEM, "id": "456", "title": "iPad"}]}}
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = batch_resp
@@ -291,7 +298,8 @@ def test_init_loads_from_env(tmp_path, monkeypatch):
     assert rc.is_configured() is True
 
 
-def test_init_loads_from_settings_file(tmp_path):
+def test_init_loads_from_settings_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("RAPIDAPI_KEY", raising=False)
     rc._save_settings({"key": "file_key_long_enough_1234567890", "calls_today": 5, "calls_date": rc._today()})
     rc.init_rapidapi()
     assert rc._api_key == "file_key_long_enough_1234567890"

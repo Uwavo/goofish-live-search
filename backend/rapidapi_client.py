@@ -160,7 +160,7 @@ async def search_listings(
     try:
         async with httpx.AsyncClient(timeout=12) as client:
             resp = await client.get(
-                f"https://{RAPIDAPI_HOST}/search_goofish_listings",
+                f"https://{RAPIDAPI_HOST}/v1/goofish/search",
                 params=params,
                 headers=_headers(),
             )
@@ -189,7 +189,7 @@ async def get_item_detail(item_id: str) -> dict | None:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(
-                f"https://{RAPIDAPI_HOST}/get_goofish_listing_detail",
+                f"https://{RAPIDAPI_HOST}/v1/goofish/item",
                 params={"item_id": item_id},
                 headers=_headers(),
             )
@@ -210,14 +210,15 @@ async def batch_lookup(item_ids: list[str]) -> dict[str, dict]:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                f"https://{RAPIDAPI_HOST}/batch_lookup_goofish_listings",
+                f"https://{RAPIDAPI_HOST}/v1/goofish/items/batch",
                 json={"item_ids": item_ids, "no_cache": False},
                 headers={**_headers(), "Content-Type": "application/json"},
             )
         if resp.status_code == 200:
             _increment_calls()
             data = resp.json()
-            items_raw = data.get("data", data.get("items", data))
+            outer = data.get("data", data)
+            items_raw = outer.get("items", outer) if isinstance(outer, dict) else outer
             if isinstance(items_raw, list):
                 return {str(_extract_id(it)): normalize_item(it) for it in items_raw}
             if isinstance(items_raw, dict):
@@ -236,7 +237,14 @@ def _extract_id(raw: dict) -> str:
 def normalize_item(raw: dict) -> dict:
     data = raw.get("data", raw) if isinstance(raw, dict) else raw
 
-    images = data.get("images", data.get("imageList", data.get("picList", data.get("pics", []))))
+    images = (
+        data.get("imageUrls")
+        or data.get("images")
+        or data.get("imageList")
+        or data.get("picList")
+        or data.get("pics")
+        or []
+    )
     if isinstance(images, list) and images:
         if isinstance(images[0], dict):
             images = [img.get("url", img.get("picUrl", "")) for img in images]
@@ -261,12 +269,15 @@ def normalize_item(raw: dict) -> dict:
     seller_raw = data.get("seller", data.get("sellerInfo", {}))
     if isinstance(seller_raw, dict):
         seller = seller_raw.get("nick", seller_raw.get("nickname", seller_raw.get("sellerNick", "")))
-        location = seller_raw.get("area", seller_raw.get("location", data.get("area", data.get("location", ""))))
+        location = seller_raw.get("area", seller_raw.get("location", data.get("city", data.get("area", data.get("location", "")))))
     else:
         seller = str(seller_raw) if seller_raw else data.get("sellerNick", "")
-        location = data.get("area", data.get("location", ""))
+        location = data.get("city", data.get("area", data.get("location", "")))
 
-    return {
+    condition = data.get("condition", "")
+    specs = data.get("specs", {})
+
+    result = {
         "id": item_id,
         "title": data.get("title", data.get("name", "")),
         "price": price,
@@ -278,3 +289,8 @@ def normalize_item(raw: dict) -> dict:
         "description": data.get("desc", data.get("description", data.get("content", ""))),
         "source": "rapidapi",
     }
+    if condition:
+        result["condition"] = condition
+    if specs:
+        result["specs"] = specs
+    return result
