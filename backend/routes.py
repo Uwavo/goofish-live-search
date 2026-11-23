@@ -271,7 +271,7 @@ async def rapidapi_status():
 
 
 class RapidApiKeyRequest(BaseModel):
-    key: str = Field("", max_length=200)
+    key: str | None = Field(None, max_length=200)
     page_size: int | None = Field(None, ge=1, le=30)
 
 

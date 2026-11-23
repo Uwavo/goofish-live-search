@@ -536,7 +536,7 @@ async function saveRapidApiPageSize() {
         await fetch("/api/rapidapi/settings", {
             method: "POST",
             headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
-            body: JSON.stringify({ key: "", page_size: size }),
+            body: JSON.stringify({ page_size: size }),
         });
     } catch {}
 }
