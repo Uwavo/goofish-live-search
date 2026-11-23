@@ -251,11 +251,15 @@ function updateSessionUI() {
         connectedDiv?.classList.add("hidden");
     }
 
-    // Update live view
+    // Update live view lock/unlock
+    const lockBanner = document.getElementById("liveLockBanner");
+    const liveConnected = document.getElementById("liveConnected");
     if (sessionStatus === "connected") {
-        document.getElementById("liveDesc").textContent = "Your Alipay account is connected. Searches use real-time Goofish data.";
-        document.getElementById("liveConnectBtn").textContent = "Search now →";
-        document.getElementById("liveConnectBtn").onclick = () => { showView("search"); searchInput.focus(); };
+        lockBanner?.classList.add("hidden");
+        liveConnected?.classList.remove("hidden");
+    } else {
+        lockBanner?.classList.remove("hidden");
+        liveConnected?.classList.add("hidden");
     }
 }
 

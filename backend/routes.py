@@ -6,6 +6,7 @@ from backend.browser_engine import (
     get_context,
     get_session_status,
     is_browser_ready,
+    is_verified_connected,
     open_login_window,
     search_authenticated,
 )
@@ -74,8 +75,8 @@ async def search(
     items = None
     source = "bing_search"
 
-    # Try authenticated search first
-    if get_session_status() == "connected":
+    # Try authenticated search first (only if verified)
+    if is_verified_connected():
         items = await search_authenticated(translated)
         if items:
             source = "goofish_live"
@@ -136,6 +137,44 @@ def _build_response(items, q, translated, page):
         "session": get_session_status(),
         "rate": CNY_TO_GBP_RATE,
     }
+
+
+@router.get("/search/live")
+async def search_live(
+    q: str = Query(..., min_length=1),
+    min_price: float | None = Query(None, ge=0),
+    max_price: float | None = Query(None, ge=0),
+    sort: str = Query("relevance"),
+    category: str = Query("all"),
+    filter_spam: bool = Query(True),
+):
+    if not is_verified_connected():
+        raise HTTPException(
+            status_code=401,
+            detail="You need to sign in via Alipay first to unlock Full Access.",
+        )
+
+    translated = translate_query(q)
+    if category != "all":
+        from backend.config import CATEGORIES
+        cat_term = CATEGORIES.get(category, "")
+        if cat_term:
+            translated = f"{translated} {cat_term}"
+
+    items = await search_authenticated(translated)
+    if not items:
+        items = []
+
+    all_prices = [i["price"] for i in items if i.get("price")]
+    saved = get_saved_ids()
+    for item in items:
+        item["price_gbp"] = cny_to_gbp(item.get("price"))
+        item["deal_score"] = compute_deal_score(item.get("price"), all_prices)
+        item["saved"] = item.get("id", "") in saved
+        item["source"] = "goofish_live"
+
+    items = _post_process(items, min_price, max_price, sort, filter_spam)
+    return _build_response(items, q, translated, 1)
 
 
 class SaveDealRequest(BaseModel):
