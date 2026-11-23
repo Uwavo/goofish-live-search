@@ -6,6 +6,8 @@ let viewMode = "grid";
 let cnyGbpRate = 0.11;
 let sessionStatus = "guest";
 
+const itemStore = new Map();
+
 // Elements
 const searchInput = document.getElementById("searchInput");
 const results = document.getElementById("results");
@@ -31,6 +33,26 @@ document.getElementById("categoryTabs").addEventListener("click", (e) => {
     tab.classList.add("active");
     currentCategory = tab.dataset.cat;
     if (currentQuery) doSearch();
+});
+
+// Delegated click handlers for cards and heart buttons
+document.addEventListener("click", (e) => {
+    const heartBtn = e.target.closest(".heart-btn");
+    if (heartBtn) {
+        e.stopPropagation();
+        const itemId = heartBtn.dataset.itemId;
+        if (itemId && itemStore.has(itemId)) {
+            toggleSave(heartBtn, itemStore.get(itemId));
+        }
+        return;
+    }
+    const card = e.target.closest(".product-card");
+    if (card) {
+        const itemId = card.dataset.itemId;
+        if (itemId && itemStore.has(itemId)) {
+            openDrawer(itemStore.get(itemId));
+        }
+    }
 });
 
 // Init
@@ -83,7 +105,10 @@ async function doSearch() {
         }
 
         const showGBP = document.getElementById("showGBP").checked;
-        data.items.forEach(item => results.appendChild(createCard(item, showGBP)));
+        data.items.forEach(item => {
+            itemStore.set(String(item.id), item);
+            results.appendChild(createCard(item, showGBP));
+        });
 
         const srcLabel = data.items[0]?.source === "goofish_live" ? "Live Goofish" : "Web Index";
         showStatusBar(`Found ${data.total} listings via ${srcLabel}`, "#ECFDF5", "#065F46");
@@ -93,12 +118,12 @@ async function doSearch() {
     }
 }
 
-// ── Card ──
+// ── Card (safe DOM creation) ──
 
 function createCard(item, showGBP) {
     const card = document.createElement("div");
     card.className = "product-card bg-white rounded-xl overflow-hidden cursor-pointer";
-    card.onclick = () => openDrawer(item);
+    card.dataset.itemId = String(item.id);
 
     const hasImage = item.images && item.images.length > 0 && item.images[0];
     const priceCNY = item.price != null ? `¥${formatNum(item.price)}` : "";
@@ -107,59 +132,176 @@ function createCard(item, showGBP) {
     const srcClass = item.source === "goofish_live" ? "source-live" : "source-index";
     const srcText = item.source === "goofish_live" ? "Live" : "Index";
 
-    card.innerHTML = `
-        <div class="relative" style="aspect-ratio: 4/5;">
-            ${hasImage
-                ? `<img src="${esc(item.images[0])}" alt="" class="w-full h-full object-cover bg-gray-100" loading="lazy"
-                    onerror="this.parentElement.innerHTML='<div class=\\'w-full h-full bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4\\'><p class=\\'text-xs text-gray-400 text-center line-clamp-2\\'>${esc(item.title)}</p></div>'">`
-                : `<div class="w-full h-full bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-6">
-                    <p class="text-sm text-gray-400 text-center line-clamp-2">${esc(item.description || item.title || "No preview")}</p>
-                </div>`}
-            <button class="heart-btn ${isSaved} absolute top-2.5 right-2.5 w-9 h-9 rounded-full bg-white shadow-sm flex items-center justify-center hover:scale-110 transition-transform"
-                onclick="event.stopPropagation(); toggleSave(this, ${escAttr(JSON.stringify(item))})">
-                <svg class="w-5 h-5" fill="${item.saved ? 'currentColor' : 'none'}" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>
-            </button>
-            ${item.deal_score && item.deal_score >= 20 ? `<span class="deal-badge absolute top-2.5 left-2.5">${item.deal_score}% off</span>` : ""}
-        </div>
-        <div class="p-3">
-            <h3 class="text-sm font-medium text-gray-800 line-clamp-2 mb-1.5">${esc(item.title)}</h3>
-            <div class="flex items-baseline gap-2 mb-1">
-                ${priceCNY ? `<span class="text-base font-bold text-gray-900">${priceCNY}</span>` : `<span class="text-sm text-gray-400">Price N/A</span>`}
-                ${priceGBP ? `<span class="text-xs text-gray-400">${priceGBP}</span>` : ""}
-            </div>
-            <div class="flex items-center justify-between text-xs text-gray-400">
-                <span>${esc(item.location || "")}</span>
-                <span class="px-1.5 py-0.5 rounded text-xs font-medium ${srcClass}">${srcText}</span>
-            </div>
-        </div>
-    `;
+    // Image container
+    const imgWrap = document.createElement("div");
+    imgWrap.className = "relative";
+    imgWrap.style.aspectRatio = "4/5";
+
+    if (hasImage) {
+        const img = document.createElement("img");
+        img.src = item.images[0];
+        img.alt = "";
+        img.className = "w-full h-full object-cover bg-gray-100";
+        img.loading = "lazy";
+        img.addEventListener("error", () => {
+            const fallback = document.createElement("div");
+            fallback.className = "w-full h-full bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4";
+            const p = document.createElement("p");
+            p.className = "text-xs text-gray-400 text-center line-clamp-2";
+            p.textContent = item.title || "";
+            fallback.appendChild(p);
+            imgWrap.replaceChildren(fallback);
+            imgWrap.appendChild(heartBtn);
+            if (dealBadge) imgWrap.appendChild(dealBadge);
+        });
+        imgWrap.appendChild(img);
+    } else {
+        const fallback = document.createElement("div");
+        fallback.className = "w-full h-full bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-6";
+        const p = document.createElement("p");
+        p.className = "text-sm text-gray-400 text-center line-clamp-2";
+        p.textContent = item.description || item.title || "No preview";
+        fallback.appendChild(p);
+        imgWrap.appendChild(fallback);
+    }
+
+    // Heart button
+    const heartBtn = document.createElement("button");
+    heartBtn.className = `heart-btn ${isSaved} absolute top-2.5 right-2.5 w-9 h-9 rounded-full bg-white shadow-sm flex items-center justify-center hover:scale-110 transition-transform`;
+    heartBtn.dataset.itemId = String(item.id);
+    heartBtn.innerHTML = `<svg class="w-5 h-5" fill="${item.saved ? 'currentColor' : 'none'}" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>`;
+    imgWrap.appendChild(heartBtn);
+
+    // Deal badge
+    let dealBadge = null;
+    if (item.deal_score && item.deal_score >= 20) {
+        dealBadge = document.createElement("span");
+        dealBadge.className = "deal-badge absolute top-2.5 left-2.5";
+        dealBadge.textContent = `${item.deal_score}% off`;
+        imgWrap.appendChild(dealBadge);
+    }
+
+    card.appendChild(imgWrap);
+
+    // Info section
+    const info = document.createElement("div");
+    info.className = "p-3";
+
+    const title = document.createElement("h3");
+    title.className = "text-sm font-medium text-gray-800 line-clamp-2 mb-1.5";
+    title.textContent = item.title || "";
+    info.appendChild(title);
+
+    const priceRow = document.createElement("div");
+    priceRow.className = "flex items-baseline gap-2 mb-1";
+    if (priceCNY) {
+        const cnySpan = document.createElement("span");
+        cnySpan.className = "text-base font-bold text-gray-900";
+        cnySpan.textContent = priceCNY;
+        priceRow.appendChild(cnySpan);
+    } else {
+        const na = document.createElement("span");
+        na.className = "text-sm text-gray-400";
+        na.textContent = "Price N/A";
+        priceRow.appendChild(na);
+    }
+    if (priceGBP) {
+        const gbpSpan = document.createElement("span");
+        gbpSpan.className = "text-xs text-gray-400";
+        gbpSpan.textContent = priceGBP;
+        priceRow.appendChild(gbpSpan);
+    }
+    info.appendChild(priceRow);
+
+    const meta = document.createElement("div");
+    meta.className = "flex items-center justify-between text-xs text-gray-400";
+    const loc = document.createElement("span");
+    loc.textContent = item.location || "";
+    meta.appendChild(loc);
+    const srcSpan = document.createElement("span");
+    srcSpan.className = `px-1.5 py-0.5 rounded text-xs font-medium ${srcClass}`;
+    srcSpan.textContent = srcText;
+    meta.appendChild(srcSpan);
+    info.appendChild(meta);
+
+    card.appendChild(info);
     return card;
 }
 
 // ── Drawer ──
 
 function openDrawer(item) {
+    const container = document.getElementById("drawerContent");
+    container.innerHTML = "";
+
     const showGBP = document.getElementById("showGBP").checked;
     const priceCNY = item.price != null ? `¥${formatNum(item.price)}` : "Price N/A";
     const priceGBP = showGBP && item.price != null ? ` · ~£${formatNum(item.price * cnyGbpRate)}` : "";
     const hasImage = item.images && item.images.length > 0 && item.images[0];
 
-    document.getElementById("drawerContent").innerHTML = `
-        ${hasImage ? `<img src="${esc(item.images[0])}" class="w-full rounded-xl mb-4 bg-gray-100" loading="lazy">` : ""}
-        <h2 class="text-lg font-bold text-gray-900 mb-2">${esc(item.title)}</h2>
-        <div class="text-2xl font-bold text-gray-900 mb-3">${priceCNY}${priceGBP}</div>
-        ${item.deal_score && item.deal_score >= 20 ? `<span class="deal-badge mb-3 inline-block">${item.deal_score}% below median</span>` : ""}
-        <div class="space-y-2 text-sm text-gray-600 mb-4">
-            ${item.seller ? `<div><span class="font-medium">Seller:</span> ${esc(item.seller)}</div>` : ""}
-            ${item.location ? `<div><span class="font-medium">Location:</span> ${esc(item.location)}</div>` : ""}
-            ${item.source ? `<div><span class="font-medium">Source:</span> ${item.source === "goofish_live" ? "Live Goofish" : "Bing Web Index"}</div>` : ""}
-        </div>
-        ${item.description ? `<div class="text-sm text-gray-500 mb-4 p-3 bg-gray-50 rounded-lg">${esc(item.description)}</div>` : ""}
-        <a href="${esc(item.url)}" target="_blank" rel="noopener"
-            class="block w-full text-center py-3 rounded-xl font-semibold text-white" style="background: var(--primary);">
-            Open on Goofish ↗
-        </a>
-    `;
+    if (hasImage) {
+        const img = document.createElement("img");
+        img.src = item.images[0];
+        img.className = "w-full rounded-xl mb-4 bg-gray-100";
+        img.loading = "lazy";
+        container.appendChild(img);
+    }
+
+    const h2 = document.createElement("h2");
+    h2.className = "text-lg font-bold text-gray-900 mb-2";
+    h2.textContent = item.title || "";
+    container.appendChild(h2);
+
+    const price = document.createElement("div");
+    price.className = "text-2xl font-bold text-gray-900 mb-3";
+    price.textContent = priceCNY + priceGBP;
+    container.appendChild(price);
+
+    if (item.deal_score && item.deal_score >= 20) {
+        const badge = document.createElement("span");
+        badge.className = "deal-badge mb-3 inline-block";
+        badge.textContent = `${item.deal_score}% below median`;
+        container.appendChild(badge);
+    }
+
+    const details = document.createElement("div");
+    details.className = "space-y-2 text-sm text-gray-600 mb-4";
+    if (item.seller) {
+        const d = document.createElement("div");
+        d.innerHTML = '<span class="font-medium">Seller:</span> ';
+        d.appendChild(document.createTextNode(item.seller));
+        details.appendChild(d);
+    }
+    if (item.location) {
+        const d = document.createElement("div");
+        d.innerHTML = '<span class="font-medium">Location:</span> ';
+        d.appendChild(document.createTextNode(item.location));
+        details.appendChild(d);
+    }
+    if (item.source) {
+        const d = document.createElement("div");
+        d.innerHTML = '<span class="font-medium">Source:</span> ';
+        d.appendChild(document.createTextNode(item.source === "goofish_live" ? "Live Goofish" : "Bing Web Index"));
+        details.appendChild(d);
+    }
+    container.appendChild(details);
+
+    if (item.description) {
+        const desc = document.createElement("div");
+        desc.className = "text-sm text-gray-500 mb-4 p-3 bg-gray-50 rounded-lg";
+        desc.textContent = item.description;
+        container.appendChild(desc);
+    }
+
+    const link = document.createElement("a");
+    link.href = item.url || "#";
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.className = "block w-full text-center py-3 rounded-xl font-semibold text-white";
+    link.style.background = "var(--primary)";
+    link.textContent = "Open on Goofish ↗";
+    container.appendChild(link);
+
     document.getElementById("drawer").classList.add("open");
     document.getElementById("drawerOverlay").classList.add("open");
 }
@@ -174,13 +316,13 @@ function closeDrawer() {
 async function toggleSave(btn, item) {
     const isSaved = btn.classList.contains("saved");
     if (isSaved) {
-        await fetch(`/api/deals/${item.id}`, { method: "DELETE" });
+        await fetch(`/api/deals/${item.id}`, { method: "DELETE", headers: { "X-Requested-With": "XMLHttpRequest" } });
         btn.classList.remove("saved");
         btn.querySelector("svg").setAttribute("fill", "none");
     } else {
         await fetch("/api/deals/save", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
             body: JSON.stringify({ item }),
         });
         btn.classList.add("saved");
@@ -217,6 +359,7 @@ async function loadSavedDeals() {
             const showGBP = document.getElementById("showGBP").checked;
             data.items.forEach(item => {
                 item.saved = true;
+                itemStore.set(String(item.id), item);
                 container.appendChild(createCard(item, showGBP));
             });
         }
@@ -240,7 +383,6 @@ function updateSessionUI() {
     document.getElementById("headerDot").className = `status-dot ${sessionStatus}`;
     document.getElementById("sidebarDot").className = `status-dot ${sessionStatus}`;
 
-    const connectBtn = document.getElementById("connectBtn");
     const connectedDiv = document.getElementById("accountConnected");
     const actionsDiv = document.getElementById("accountActions");
     if (sessionStatus === "connected") {
@@ -251,7 +393,6 @@ function updateSessionUI() {
         connectedDiv?.classList.add("hidden");
     }
 
-    // Update live view lock/unlock
     const lockBanner = document.getElementById("liveLockBanner");
     const liveConnected = document.getElementById("liveConnected");
     if (sessionStatus === "connected") {
@@ -269,7 +410,7 @@ async function startLogin() {
     btn.innerHTML = '<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Opening login window...';
 
     try {
-        const res = await fetch("/api/session/login", { method: "POST" });
+        const res = await fetch("/api/session/login", { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
         const data = await res.json();
         if (data.success) {
             sessionStatus = "connected";
@@ -285,7 +426,7 @@ async function startLogin() {
 }
 
 async function doLogout() {
-    await fetch("/api/session/logout", { method: "POST" });
+    await fetch("/api/session/logout", { method: "POST", headers: { "X-Requested-With": "XMLHttpRequest" } });
     sessionStatus = "guest";
     updateSessionUI();
 }
@@ -325,16 +466,6 @@ function showStatusBar(msg, bg, color) {
 
 function formatNum(n) {
     return n.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function esc(str) {
-    const d = document.createElement("div");
-    d.textContent = str || "";
-    return d.innerHTML;
-}
-
-function escAttr(str) {
-    return str.replace(/'/g, "\\'").replace(/"/g, "&quot;");
 }
 
 document.addEventListener("keydown", (e) => {

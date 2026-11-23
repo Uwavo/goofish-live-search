@@ -5,11 +5,12 @@ import pytest
 
 os.environ["CACHE_DB"] = "test_cache.db"
 
-from backend.cache import cache_key, clear_cache, get_cached, set_cached
+from backend.cache import cache_key, clear_cache, get_cached, init_cache_db, set_cached
 
 
 @pytest.fixture(autouse=True)
 def clean_cache():
+    init_cache_db()
     clear_cache()
     yield
     clear_cache()

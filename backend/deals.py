@@ -21,15 +21,28 @@ def compute_deal_score(price: float | None, all_prices: list[float]) -> int | No
     return min(score, 100)
 
 
-def _get_conn() -> sqlite3.Connection:
+_initialized = False
+
+
+def init_deals_db() -> None:
     import os
+    global _initialized
     os.makedirs(os.path.dirname(SAVED_DEALS_DB), exist_ok=True)
-    conn = sqlite3.connect(SAVED_DEALS_DB)
+    conn = sqlite3.connect(SAVED_DEALS_DB, timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""CREATE TABLE IF NOT EXISTS saved_deals (
         item_id TEXT PRIMARY KEY,
         data TEXT,
         saved_at REAL
     )""")
+    conn.commit()
+    conn.close()
+    _initialized = True
+
+
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(SAVED_DEALS_DB, timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 

@@ -66,6 +66,8 @@ def normalize_search_results(raw_items: list[dict]) -> list[dict]:
 def filter_by_price(
     items: list[dict], min_price: float | None, max_price: float | None
 ) -> list[dict]:
+    if min_price is None and max_price is None:
+        return items
     result = []
     for item in items:
         p = item.get("price")

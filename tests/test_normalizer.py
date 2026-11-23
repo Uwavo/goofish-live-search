@@ -81,4 +81,23 @@ def test_filter_by_price():
     ]
     assert len(filter_by_price(items, 20, 80)) == 1
     assert filter_by_price(items, 20, 80)[0]["price"] == 50.0
+
+
+def test_filter_by_price_no_filters_preserves_all():
+    items = [
+        {"price": 10.0}, {"price": 50.0}, {"price": None}
+    ]
     assert len(filter_by_price(items, None, None)) == 3
+
+
+def test_filter_by_price_min_only_drops_none():
+    items = [{"price": 10.0}, {"price": None}, {"price": 50.0}]
+    result = filter_by_price(items, 5, None)
+    assert len(result) == 2
+    assert all(r["price"] is not None for r in result)
+
+
+def test_filter_by_price_max_only_drops_none():
+    items = [{"price": 10.0}, {"price": None}, {"price": 50.0}]
+    result = filter_by_price(items, None, 100)
+    assert len(result) == 2

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Header, Query
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from backend.browser_engine import (
     clear_session,
@@ -21,6 +22,11 @@ from backend.translator import translate_query
 router = APIRouter(prefix="/api")
 
 
+def _require_xhr(x_requested_with: Optional[str]) -> None:
+    if x_requested_with != "XMLHttpRequest":
+        raise HTTPException(status_code=403, detail="Missing or invalid X-Requested-With header")
+
+
 @router.get("/health")
 async def health():
     return {
@@ -36,13 +42,15 @@ async def session_status():
 
 
 @router.post("/session/login")
-async def session_login():
+async def session_login(x_requested_with: Optional[str] = Header(None)):
+    _require_xhr(x_requested_with)
     result = await open_login_window()
     return result
 
 
 @router.post("/session/logout")
-async def session_logout():
+async def session_logout(x_requested_with: Optional[str] = Header(None)):
+    _require_xhr(x_requested_with)
     await clear_session()
     return {"status": "guest"}
 
@@ -58,11 +66,13 @@ async def search(
     filter_spam: bool = Query(True),
     page: int = Query(1, ge=1),
 ):
-    key = cache_key("search_v3", {"q": q, "page": page, "include_sold": include_sold, "cat": category})
+    key = cache_key("search_v4", {
+        "q": q, "page": page, "include_sold": include_sold, "cat": category,
+        "min": min_price, "max": max_price, "sort": sort, "spam": filter_spam,
+    })
     cached = get_cached(key)
     if cached is not None:
-        items = _post_process(cached, min_price, max_price, sort, filter_spam)
-        return _build_response(items, q, q, page)
+        return _build_response(cached, q, q, page)
 
     translated = translate_query(q)
 
@@ -109,15 +119,15 @@ async def search(
         item["saved"] = item.get("id", "") in saved
         item.setdefault("source", source)
 
-    set_cached(key, items)
     items = _post_process(items, min_price, max_price, sort, filter_spam)
+    set_cached(key, items)
     return _build_response(items, q, translated, page)
 
 
 def _post_process(items, min_price, max_price, sort, filter_spam):
     items = filter_by_price(items, min_price, max_price)
     if filter_spam:
-        items = [i for i in items if not any(kw in (i.get("title", "") + i.get("description", "")) for kw in SPAM_KEYWORDS)]
+        items = [i for i in items if not any(kw in (i.get("title", "") + i.get("description", "")).lower() for kw in SPAM_KEYWORDS)]
     if sort == "price_asc":
         items.sort(key=lambda x: x.get("price") or float("inf"))
     elif sort == "price_desc":
@@ -177,18 +187,35 @@ async def search_live(
     return _build_response(items, q, translated, 1)
 
 
+class DealItem(BaseModel):
+    id: str = Field(..., min_length=1, max_length=64)
+    title: str = Field("", max_length=500)
+    price: Optional[float] = None
+    url: str = Field("", max_length=1000)
+    description: str = Field("", max_length=2000)
+    images: list[str] = Field(default_factory=list)
+    seller: str = Field("", max_length=200)
+    location: str = Field("", max_length=200)
+    source: str = Field("", max_length=50)
+    deal_score: Optional[int] = None
+    price_gbp: Optional[float] = None
+    status: str = Field("on_sale", max_length=20)
+
+
 class SaveDealRequest(BaseModel):
-    item: dict
+    item: DealItem
 
 
 @router.post("/deals/save")
-async def api_save_deal(req: SaveDealRequest):
-    save_deal(req.item)
+async def api_save_deal(req: SaveDealRequest, x_requested_with: Optional[str] = Header(None)):
+    _require_xhr(x_requested_with)
+    save_deal(req.item.model_dump())
     return {"ok": True}
 
 
 @router.delete("/deals/{item_id}")
-async def api_remove_deal(item_id: str):
+async def api_remove_deal(item_id: str, x_requested_with: Optional[str] = Header(None)):
+    _require_xhr(x_requested_with)
     remove_deal(item_id)
     return {"ok": True}
 

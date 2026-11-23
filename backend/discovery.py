@@ -1,4 +1,5 @@
 """Discover Goofish items via Bing search and extract metadata."""
+import asyncio
 import logging
 import re
 from urllib.parse import quote_plus
@@ -110,8 +111,16 @@ def _clean_result(item_id: str, sr: dict) -> dict | None:
     }
 
 
+_redirect_sem = asyncio.Semaphore(3)
+
+
+async def _follow_redirect_bounded(context, href: str) -> str | None:
+    async with _redirect_sem:
+        return await _follow_redirect(context, href)
+
+
 async def discover_items_with_browser(context, query: str, original_query: str = "", max_items: int = 20) -> list[dict]:
-    """Find Goofish items by searching Bing pages 1+2, following redirects."""
+    """Find Goofish items by searching Bing pages 1+2, following redirects in parallel."""
     items = []
     seen = set()
 
@@ -123,7 +132,6 @@ async def discover_items_with_browser(context, query: str, original_query: str =
         if len(items) >= max_items:
             break
 
-        # Fetch Bing pages 1 and 2
         all_results = []
         for first in (0, 10):
             if len(items) + len(all_results) >= max_items + 5:
@@ -133,15 +141,17 @@ async def discover_items_with_browser(context, query: str, original_query: str =
 
         log.info("Bing returned %d item results for %r", len(all_results), q)
 
-        for sr in all_results:
+        # Resolve redirects in parallel (bounded by semaphore)
+        candidates = [sr for sr in all_results if sr.get("href")][:max_items - len(items) + 5]
+        resolved = await asyncio.gather(
+            *[_follow_redirect_bounded(context, sr["href"]) for sr in candidates],
+            return_exceptions=True,
+        )
+
+        for sr, item_id in zip(candidates, resolved):
             if len(items) >= max_items:
                 break
-            if not sr.get("href"):
-                continue
-
-            item_id = await _follow_redirect(context, sr["href"])
-
-            if not item_id or item_id in seen:
+            if isinstance(item_id, Exception) or not item_id or item_id in seen:
                 continue
             seen.add(item_id)
             log.info("Discovered item %s: %s", item_id, sr.get("title", "")[:40])

@@ -43,7 +43,8 @@ def test_saved_deals_roundtrip(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test.db")
     monkeypatch.setattr("backend.deals.SAVED_DEALS_DB", db_path)
 
-    from backend.deals import get_saved_deals, get_saved_ids, remove_deal, save_deal
+    from backend.deals import get_saved_deals, get_saved_ids, init_deals_db, remove_deal, save_deal
+    init_deals_db()
 
     item = {"id": "abc123", "title": "Test", "price": 99.0}
     save_deal(item)
@@ -61,10 +62,41 @@ def test_save_deal_upsert(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test.db")
     monkeypatch.setattr("backend.deals.SAVED_DEALS_DB", db_path)
 
-    from backend.deals import get_saved_deals, save_deal
+    from backend.deals import get_saved_deals, init_deals_db, save_deal
+    init_deals_db()
 
     save_deal({"id": "x1", "title": "V1", "price": 10})
     save_deal({"id": "x1", "title": "V2", "price": 20})
     deals = get_saved_deals()
     assert len(deals) == 1
     assert deals[0]["title"] == "V2"
+
+
+def test_init_deals_db_creates_table_and_wal(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "init_test.db")
+    monkeypatch.setattr("backend.deals.SAVED_DEALS_DB", db_path)
+
+    from backend.deals import init_deals_db
+    init_deals_db()
+
+    conn = sqlite3.connect(db_path)
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode == "wal"
+    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    assert any(t[0] == "saved_deals" for t in tables)
+    conn.close()
+
+
+def test_init_cache_db_creates_table_and_wal(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "cache_test.db")
+    monkeypatch.setattr("backend.cache.CACHE_DB_PATH", db_path)
+
+    from backend.cache import init_cache_db
+    init_cache_db()
+
+    conn = sqlite3.connect(db_path)
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode == "wal"
+    tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    assert any(t[0] == "cache" for t in tables)
+    conn.close()

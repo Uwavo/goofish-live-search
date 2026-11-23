@@ -29,6 +29,7 @@ _context: BrowserContext | None = None
 _warmed_up = False
 _cooldown_until = 0.0
 _verified_connected = False
+_session_lock = asyncio.Lock()
 
 PROFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "browser_profile")
 LOGIN_PROFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "login_profile")
@@ -132,11 +133,12 @@ async def save_session() -> None:
 
 async def clear_session() -> None:
     global _verified_connected
-    if os.path.isfile(SESSION_STATE_PATH):
-        os.remove(SESSION_STATE_PATH)
-    if _context:
-        await _context.clear_cookies()
-    _verified_connected = False
+    async with _session_lock:
+        if os.path.isfile(SESSION_STATE_PATH):
+            os.remove(SESSION_STATE_PATH)
+        if _context:
+            await _context.clear_cookies()
+        _verified_connected = False
     log.info("Session cleared")
 
 
@@ -280,7 +282,9 @@ def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
 # ── Authenticated search ──
 
 async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | None:
-    if not _context or not _verified_connected:
+    async with _session_lock:
+        connected = _verified_connected
+    if not _context or not connected:
         return None
     if _check_cooldown():
         return None
@@ -368,8 +372,9 @@ async def open_login_window() -> dict:
         return {"success": False, "error": "Browser not initialized"}
 
     # 1. Wipe stale auth state BEFORE opening login
-    _delete_session_file()
-    _verified_connected = False
+    async with _session_lock:
+        _delete_session_file()
+        _verified_connected = False
     if _context:
         await _context.clear_cookies()
         log.info("Cleared headless context cookies before login")
@@ -466,7 +471,8 @@ async def open_login_window() -> dict:
             # 3. REAL mtop verification — the only way to get Full Access
             verified = await _verify_session_with_mtop()
             if verified:
-                _verified_connected = True
+                async with _session_lock:
+                    _verified_connected = True
                 log.info("Login + mtop verification SUCCESS — Full Access granted")
                 try:
                     await login_ctx.close()

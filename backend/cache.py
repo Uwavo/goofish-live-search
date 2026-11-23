@@ -7,14 +7,25 @@ from typing import Any
 from backend.config import CACHE_DB_PATH, CACHE_TTL_SECONDS
 
 _write_count = 0
+_initialized = False
 
 
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(CACHE_DB_PATH)
+def init_cache_db() -> None:
+    global _initialized
+    conn = sqlite3.connect(CACHE_DB_PATH, timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS cache "
         "(key TEXT PRIMARY KEY, data TEXT, created_at REAL)"
     )
+    conn.commit()
+    conn.close()
+    _initialized = True
+
+
+def _get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(CACHE_DB_PATH, timeout=10.0)
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 

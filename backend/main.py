@@ -9,11 +9,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.browser_engine import close_browser, init_browser
+from backend.cache import init_cache_db
+from backend.deals import init_deals_db
 from backend.routes import router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    init_cache_db()
+    init_deals_db()
     await init_browser()
     yield
     await close_browser()
@@ -23,9 +27,9 @@ app = FastAPI(title="Goofish Live Search", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["http://localhost:1212", "http://127.0.0.1:1212", "http://0.0.0.0:1212"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Requested-With"],
 )
 
 app.include_router(router)
