@@ -159,7 +159,7 @@ async def search(
 def _post_process(items, min_price, max_price, sort, filter_spam):
     items = filter_by_price(items, min_price, max_price)
     if filter_spam:
-        items = [i for i in items if not any(kw in (i.get("title", "") + i.get("description", "")).lower() for kw in SPAM_KEYWORDS)]
+        items = [i for i in items if not any(kw in ((i.get("title") or "") + (i.get("description") or "")).lower() for kw in SPAM_KEYWORDS)]
     if sort == "price_asc":
         items.sort(key=lambda x: x.get("price") or float("inf"))
     elif sort == "price_desc":
