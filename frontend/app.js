@@ -79,6 +79,9 @@ async function doSearch() {
     const maxP = document.getElementById("filterMax").value;
     if (minP) params.set("min_price", minP);
     if (maxP) params.set("max_price", maxP);
+    if (document.getElementById("filterPersonal").checked) params.set("personal_only", "true");
+    if (document.getElementById("filterFreeShip").checked) params.set("free_shipping", "true");
+    if (document.getElementById("filterBrandNew").checked) params.set("brand_new", "true");
 
     try {
         const res = await fetch(`/api/search?${params}`);
@@ -110,8 +113,10 @@ async function doSearch() {
             results.appendChild(createCard(item, showGBP));
         });
 
-        const srcLabel = data.items[0]?.source === "goofish_live" ? "Live Goofish" : "Web Index";
+        const srcMap = { goofish_live: "Live Goofish", rapidapi: "RapidAPI", bing_search: "Web Index" };
+        const srcLabel = srcMap[data.items[0]?.source] || "Web Index";
         showStatusBar(`Found ${data.total} listings via ${srcLabel}`, "#ECFDF5", "#065F46");
+        if (data.rapidapi) updateRapidApiUI(data.rapidapi);
     } catch (err) {
         results.innerHTML = "";
         showStatusBar(`Error: ${err.message}`, "#FEF2F2", "#991B1B");
@@ -129,8 +134,8 @@ function createCard(item, showGBP) {
     const priceCNY = item.price != null ? `¥${formatNum(item.price)}` : "";
     const priceGBP = showGBP && item.price != null ? `~£${formatNum(item.price * cnyGbpRate)}` : "";
     const isSaved = item.saved ? "saved" : "";
-    const srcClass = item.source === "goofish_live" ? "source-live" : "source-index";
-    const srcText = item.source === "goofish_live" ? "Live" : "Index";
+    const srcClass = item.source === "goofish_live" ? "source-live" : item.source === "rapidapi" ? "source-rapidapi" : "source-index";
+    const srcText = item.source === "goofish_live" ? "Live" : item.source === "rapidapi" ? "API" : "Index";
 
     // Image container
     const imgWrap = document.createElement("div");
@@ -281,7 +286,8 @@ function openDrawer(item) {
     if (item.source) {
         const d = document.createElement("div");
         d.innerHTML = '<span class="font-medium">Source:</span> ';
-        d.appendChild(document.createTextNode(item.source === "goofish_live" ? "Live Goofish" : "Bing Web Index"));
+        const srcNames = { goofish_live: "Live Goofish", rapidapi: "RapidAPI Goofish", bing_search: "Bing Web Index" };
+        d.appendChild(document.createTextNode(srcNames[item.source] || "Bing Web Index"));
         details.appendChild(d);
     }
     container.appendChild(details);
@@ -476,3 +482,63 @@ document.addEventListener("keydown", (e) => {
 document.getElementById("showGBP").addEventListener("change", () => {
     if (currentQuery && results.children.length > 0) doSearch();
 });
+
+// ── RapidAPI Settings ──
+
+function updateRapidApiUI(status) {
+    const badge = document.getElementById("rapidapiBadge");
+    const calls = document.getElementById("rapidapiCallsToday");
+    if (!badge) return;
+    if (status.active) {
+        badge.textContent = "Active";
+        badge.className = "text-xs font-medium px-2 py-0.5 rounded-full";
+        badge.style.background = "rgba(9,177,186,0.1)";
+        badge.style.color = "var(--primary)";
+    } else {
+        badge.textContent = "Not Set";
+        badge.className = "text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-500";
+        badge.style.background = "";
+        badge.style.color = "";
+    }
+    if (calls) calls.textContent = status.calls_today ?? 0;
+    const pageSel = document.getElementById("settingsPageSize");
+    if (pageSel && status.page_size) pageSel.value = String(status.page_size);
+}
+
+async function loadRapidApiStatus() {
+    try {
+        const res = await fetch("/api/rapidapi/status");
+        if (res.ok) updateRapidApiUI(await res.json());
+    } catch {}
+}
+
+async function saveRapidApiKey() {
+    const input = document.getElementById("settingsRapidApiKey");
+    const key = input.value.trim();
+    try {
+        const res = await fetch("/api/rapidapi/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+            body: JSON.stringify({ key }),
+        });
+        if (res.ok) {
+            const status = await res.json();
+            updateRapidApiUI(status);
+            input.value = "";
+            input.placeholder = status.active ? "Key saved (hidden)" : "Paste your RapidAPI key...";
+        }
+    } catch {}
+}
+
+async function saveRapidApiPageSize() {
+    const size = parseInt(document.getElementById("settingsPageSize").value, 10);
+    try {
+        await fetch("/api/rapidapi/settings", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest" },
+            body: JSON.stringify({ key: "", page_size: size }),
+        });
+    } catch {}
+}
+
+loadRapidApiStatus();

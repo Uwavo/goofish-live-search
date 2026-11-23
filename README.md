@@ -2,13 +2,13 @@
   <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Playwright-2EAD33?style=flat-square&logo=playwright&logoColor=white" alt="Playwright">
-  <img src="https://img.shields.io/badge/tests-75%20passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-107%20passing-brightgreen?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
 </p>
 
 # Goofish Live Search
 
-A local dashboard for searching [Goofish (闲鱼)](https://www.goofish.com) — China's largest second-hand marketplace. Runs on `localhost:1212` with two modes: **Guest** (no account needed) and **Full Access** (Alipay QR login).
+A local dashboard for searching [Goofish (闲鱼)](https://www.goofish.com) — China's largest second-hand marketplace. Runs on `localhost:1212` with three modes: **Guest** (Bing-only, no account), **RapidAPI Guest** (HD images + exact prices, no Goofish account), and **Full Access** (Alipay QR login).
 
 Built for UK resellers who want to source from Goofish without navigating Chinese UI.
 
@@ -16,16 +16,18 @@ Built for UK resellers who want to source from Goofish without navigating Chines
 
 ## Features
 
-| | Guest Mode | Full Access |
-|---|---|---|
-| **Search** | Bing web index | Real-time Goofish API |
-| **Results** | ~10 per query | 20+ per query |
-| **Images** | No | Full galleries |
-| **Prices** | Extracted from snippets | Exact from API |
-| **Seller info** | No | Yes |
-| **Account needed** | No | Alipay QR scan |
+| | Guest (Free) | Guest + RapidAPI | Full Access |
+|---|---|---|---|
+| **Search** | Bing web index | RapidAPI Goofish API | Local mtop API |
+| **Results** | ~10 per query | 10–30 per page | 20+ per query |
+| **Images** | No | HD galleries | Full galleries |
+| **Prices** | Snippet extraction | Exact CNY | Exact CNY |
+| **Seller info** | No | Nickname + location | Full |
+| **Native filters** | No | Personal / Free Ship / New / Price Drop | Category only |
+| **Account needed** | None | RapidAPI key only | Alipay QR scan |
+| **Cost** | Free | Per RapidAPI plan | Free |
 
-**Both modes include:**
+**All modes include:**
 - Auto English → Chinese translation (MyMemory API, cached in-memory)
 - Deal scoring (0–100 based on price vs median)
 - CNY → GBP conversion toggle
@@ -52,13 +54,21 @@ Open **http://localhost:1212**
 
 ## How It Works
 
-### Guest Mode
+### Guest Mode (Free, no account)
 ```
 English query → MyMemory translation → Bing "site:goofish.com/item <query>"
   → scrape 2 pages → follow redirects (3 concurrent) → extract IDs + prices
 ```
 
-### Full Access
+### Guest + RapidAPI (no Goofish account needed)
+```
+English or Chinese query → GET /search_goofish_listings (keyword, filters, sort)
+  → HD images, exact CNY prices, seller info, sold status
+  → native marketplace filters: personal sellers, free shipping, brand new, price drops
+```
+Set your RapidAPI key in **Settings → RapidAPI Key** or in `.env` as `RAPIDAPI_KEY`. The API accepts English keywords directly (no translation step needed, though we still translate for consistency).
+
+### Full Access (Alipay QR)
 ```
 "Link Alipay Account" → visible browser opens → scan QR with Alipay app
   → cookies saved to ./data/session_state.json
@@ -86,8 +96,9 @@ Session persists across restarts. On startup, the backend re-verifies the saved 
 │  FastAPI Backend (:1212)                                      │
 │                                                               │
 │  GET /api/search ──┐                                          │
-│                    ├─→ Verified? → mtop API (Playwright)      │
-│                    └─→ Guest?   → Bing scrape (Playwright)    │
+│                    ├─→ Verified?  → mtop API (Playwright)     │
+│                    ├─→ RapidAPI?  → Goofish API (httpx)       │
+│                    └─→ Guest?    → Bing scrape (Playwright)   │
 │                                                               │
 │  POST /api/session/login ──→ Visible Chromium + Alipay QR     │
 │  POST /api/deals/save ────→ SQLite (WAL mode)                 │
@@ -144,7 +155,7 @@ Session persists across restarts. On startup, the backend re-verifies the saved 
 ## Tests
 
 ```bash
-# Run all unit tests (75 tests)
+# Run all unit tests (107 tests)
 python -m pytest tests/ --ignore=tests/test_live.py --ignore=tests/test_e2e.py -q
 
 # E2E tests (requires running server)
@@ -167,6 +178,7 @@ backend/
 ├── normalizer.py       Price parsing, image URLs, listing normalisation
 ├── currency.py         CNY↔GBP conversion
 ├── deals.py            Deal scoring + SQLite persistence
+├── rapidapi_client.py  RapidAPI Goofish search, detail, batch + settings
 ├── cache.py            SQLite TTL cache (15 min)
 └── config.py           All settings (port, jitter, categories, spam words)
 
@@ -182,6 +194,7 @@ tests/
 ├── test_discovery.py   Bing scraping + price extraction
 ├── test_currency.py    CNY/GBP conversion
 ├── test_translator.py  Translation detection
+├── test_rapidapi.py    RapidAPI client, normalize, fallback, settings (32 tests)
 ├── test_cache.py       Cache TTL + DB init
 └── test_e2e.py         Playwright E2E (requires server)
 
@@ -196,6 +209,7 @@ All settings via environment variables or `backend/config.py`:
 
 | Variable | Default | Description |
 |---|---|---|
+| `RAPIDAPI_KEY` | _(none)_ | RapidAPI key for Guest Mode enrichment (or set in Settings UI) |
 | `PORT` | `1212` | Server port |
 | `CNY_GBP_RATE` | `0.11` | Exchange rate for price display |
 | `CACHE_TTL` | `900` | Search cache TTL in seconds |
@@ -207,9 +221,9 @@ All settings via environment variables or `backend/config.py`:
 
 ## Limitations
 
-- **No images in guest mode** — Goofish blocks item content without login
-- **~10 results in guest mode** — limited by Bing's index coverage
-- **Guest prices are best-effort** — extracted from Bing snippet text
+- **No images in free guest mode** — Goofish blocks item content without login (use RapidAPI to get images without an account)
+- **~10 results in free guest mode** — limited by Bing's index coverage
+- **Free guest prices are best-effort** — extracted from Bing snippet text
 - **Alipay app required for Full Access** — no username/password login supported
 - **Single user** — designed for local use, not multi-tenant
 
@@ -221,4 +235,4 @@ All settings via environment variables or `backend/config.py`:
 
 **Frontend:** HTML5, Tailwind CSS, vanilla JavaScript (no framework)
 
-**Testing:** pytest, 75 unit tests
+**Testing:** pytest, 107 unit tests

@@ -2,6 +2,9 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 
 from fastapi import FastAPI
@@ -11,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.browser_engine import close_browser, init_browser
 from backend.cache import init_cache_db
 from backend.deals import init_deals_db
+from backend.rapidapi_client import init_rapidapi
 from backend.routes import router
 
 
@@ -18,6 +22,7 @@ from backend.routes import router
 async def lifespan(app: FastAPI):
     init_cache_db()
     init_deals_db()
+    init_rapidapi()
     await init_browser()
     yield
     await close_browser()
