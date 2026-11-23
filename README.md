@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Playwright-2EAD33?style=flat-square&logo=playwright&logoColor=white" alt="Playwright">
-  <img src="https://img.shields.io/badge/tests-107%20passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-114%20passing-brightgreen?style=flat-square" alt="Tests">
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
 </p>
 
@@ -19,7 +19,7 @@ Built for UK resellers who want to source from Goofish without navigating Chines
 | | Guest (Free) | Guest + RapidAPI | Full Access |
 |---|---|---|---|
 | **Search** | Bing web index | RapidAPI Goofish API | Local mtop API |
-| **Results** | ~10 per query | 10–30 per page | 20+ per query |
+| **Results** | ~10 per query | 30 per page + Load More | 20+ per query |
 | **Images** | No | HD galleries | Full galleries |
 | **Prices** | Snippet extraction | Exact CNY | Exact CNY |
 | **Seller info** | No | Nickname + location | Full |
@@ -155,7 +155,7 @@ Session persists across restarts. On startup, the backend re-verifies the saved 
 ## Tests
 
 ```bash
-# Run all unit tests (107 tests)
+# Run all unit tests (114 tests)
 python -m pytest tests/ --ignore=tests/test_live.py --ignore=tests/test_e2e.py -q
 
 # E2E tests (requires running server)
@@ -235,4 +235,4 @@ All settings via environment variables or `backend/config.py`:
 
 **Frontend:** HTML5, Tailwind CSS, vanilla JavaScript (no framework)
 
-**Testing:** pytest, 107 unit tests
+**Testing:** pytest, 114 unit tests
