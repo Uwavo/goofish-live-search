@@ -5,6 +5,9 @@ let currentView = "search";
 let viewMode = "grid";
 let cnyGbpRate = 0.11;
 let sessionStatus = "guest";
+let currentPage = 1;
+let lastSearchTotal = 0;
+let isLoadingMore = false;
 
 const itemStore = new Map();
 
@@ -61,15 +64,19 @@ loadSavedCount();
 
 // ── Search ──
 
-async function doSearch() {
+async function doSearch(append = false) {
     if (!currentQuery) return;
 
-    results.innerHTML = Array(8).fill('<div class="skeleton rounded-xl h-72"></div>').join("");
-    showStatusBar("Searching silently in background...", "#EFF6FF", "#1D4ED8");
+    if (!append) {
+        currentPage = 1;
+        results.innerHTML = Array(8).fill('<div class="skeleton rounded-xl h-72"></div>').join("");
+        showStatusBar("Searching silently in background...", "#EFF6FF", "#1D4ED8");
+        document.getElementById("loadMoreWrap").classList.add("hidden");
+    }
 
     const params = new URLSearchParams({
         q: currentQuery,
-        page: 1,
+        page: currentPage,
         include_sold: document.getElementById("filterSold").checked,
         sort: document.getElementById("sortSelect").value,
         category: currentCategory,
@@ -101,9 +108,10 @@ async function doSearch() {
             translateBadge.classList.add("hidden");
         }
 
-        results.innerHTML = "";
-        if (data.items.length === 0) {
+        if (!append) results.innerHTML = "";
+        if (data.items.length === 0 && !append) {
             showStatusBar("No listings found. Try different keywords.", "#FEF3C7", "#92400E");
+            document.getElementById("loadMoreWrap").classList.add("hidden");
             return;
         }
 
@@ -113,9 +121,19 @@ async function doSearch() {
             results.appendChild(createCard(item, showGBP));
         });
 
+        lastSearchTotal = data.total || data.items.length;
+        const loaded = results.children.length;
+        const wrap = document.getElementById("loadMoreWrap");
+        if (data.items.length >= 10 && loaded < lastSearchTotal) {
+            wrap.classList.remove("hidden");
+            document.getElementById("loadMoreInfo").textContent = `Showing ${loaded} of ${lastSearchTotal} results`;
+        } else {
+            wrap.classList.add("hidden");
+        }
+
         const srcMap = { goofish_live: "Live Goofish", rapidapi: "RapidAPI", bing_search: "Web Index" };
         const srcLabel = srcMap[data.items[0]?.source] || "Web Index";
-        showStatusBar(`Found ${data.total} listings via ${srcLabel}`, "#ECFDF5", "#065F46");
+        showStatusBar(`Found ${loaded} listings via ${srcLabel}`, "#ECFDF5", "#065F46");
         if (data.rapidapi) updateRapidApiUI(data.rapidapi);
     } catch (err) {
         results.innerHTML = "";
@@ -218,6 +236,32 @@ function createCard(item, showGBP) {
     }
     info.appendChild(priceRow);
 
+    // Seller row
+    if (item.seller) {
+        const sellerRow = document.createElement("div");
+        sellerRow.className = "flex items-center gap-1.5 mb-1";
+        const sellerName = document.createElement("span");
+        sellerName.className = "seller-badge truncate";
+        sellerName.textContent = `@${item.seller}`;
+        sellerRow.appendChild(sellerName);
+        if (item.condition) {
+            const condBadge = document.createElement("span");
+            condBadge.className = "personal-badge";
+            condBadge.textContent = item.condition;
+            sellerRow.appendChild(condBadge);
+        }
+        info.appendChild(sellerRow);
+    }
+
+    // Description preview
+    const desc = item.description || "";
+    if (desc) {
+        const descP = document.createElement("p");
+        descP.className = "desc-preview line-clamp-2 mb-1";
+        descP.textContent = desc;
+        info.appendChild(descP);
+    }
+
     const meta = document.createElement("div");
     meta.className = "flex items-center justify-between text-xs text-gray-400";
     const loc = document.createElement("span");
@@ -283,6 +327,12 @@ function openDrawer(item) {
         d.appendChild(document.createTextNode(item.location));
         details.appendChild(d);
     }
+    if (item.condition) {
+        const d = document.createElement("div");
+        d.innerHTML = '<span class="font-medium">Condition:</span> ';
+        d.appendChild(document.createTextNode(item.condition));
+        details.appendChild(d);
+    }
     if (item.source) {
         const d = document.createElement("div");
         d.innerHTML = '<span class="font-medium">Source:</span> ';
@@ -290,11 +340,22 @@ function openDrawer(item) {
         d.appendChild(document.createTextNode(srcNames[item.source] || "Bing Web Index"));
         details.appendChild(d);
     }
+    if (item.specs && typeof item.specs === "object") {
+        for (const [k, v] of Object.entries(item.specs)) {
+            const d = document.createElement("div");
+            const label = document.createElement("span");
+            label.className = "font-medium";
+            label.textContent = k.replace(/_/g, " ") + ": ";
+            d.appendChild(label);
+            d.appendChild(document.createTextNode(String(v)));
+            details.appendChild(d);
+        }
+    }
     container.appendChild(details);
 
     if (item.description) {
         const desc = document.createElement("div");
-        desc.className = "text-sm text-gray-500 mb-4 p-3 bg-gray-50 rounded-lg";
+        desc.className = "text-sm text-gray-500 mb-4 p-3 bg-gray-50 rounded-lg whitespace-pre-line";
         desc.textContent = item.description;
         container.appendChild(desc);
     }
@@ -510,6 +571,22 @@ async function loadRapidApiStatus() {
         const res = await fetch("/api/rapidapi/status");
         if (res.ok) updateRapidApiUI(await res.json());
     } catch {}
+}
+
+async function loadMore() {
+    if (isLoadingMore) return;
+    isLoadingMore = true;
+    const btn = document.getElementById("loadMoreBtn");
+    btn.textContent = "Loading...";
+    btn.disabled = true;
+    currentPage++;
+    try {
+        await doSearch(true);
+    } finally {
+        isLoadingMore = false;
+        btn.textContent = "Load More Items";
+        btn.disabled = false;
+    }
 }
 
 async function saveRapidApiKey() {

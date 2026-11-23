@@ -22,7 +22,7 @@ def reset_module_state(tmp_path):
     rc._api_key = None
     rc._calls_today = 0
     rc._calls_date = ""
-    rc._page_size = 10
+    rc._page_size = 30
     rc.SETTINGS_PATH = str(tmp_path / "rapidapi_settings.json")
     yield
 
@@ -326,6 +326,72 @@ def test_get_status_configured(configured):
     status = rc.get_status()
     assert status["active"] is True
     assert status["calls_today"] == 7
+
+
+# ── Seller nickname extraction ──
+
+def test_normalize_seller_from_userNick():
+    item = {**SAMPLE_ITEM, "seller": {"userNick": "TestUser123"}}
+    assert rc.normalize_item(item)["seller"] == "TestUser123"
+
+
+def test_normalize_seller_from_sellerName():
+    item = {**SAMPLE_ITEM}
+    del item["seller"]
+    item["sellerName"] = "TopSeller"
+    assert rc.normalize_item(item)["seller"] == "TopSeller"
+
+
+def test_normalize_seller_from_seller_nick():
+    item = {**SAMPLE_ITEM}
+    del item["seller"]
+    item["seller_nick"] = "nick_test"
+    assert rc.normalize_item(item)["seller"] == "nick_test"
+
+
+# ── Description field mapping ──
+
+def test_normalize_description_from_itemDesc():
+    item = {**SAMPLE_ITEM}
+    del item["desc"]
+    item["itemDesc"] = "Detailed item description here"
+    assert rc.normalize_item(item)["description"] == "Detailed item description here"
+
+
+def test_normalize_description_from_summary():
+    item = {**SAMPLE_ITEM}
+    del item["desc"]
+    item["summary"] = "Brief summary"
+    assert rc.normalize_item(item)["description"] == "Brief summary"
+
+
+# ── Page size default ──
+
+def test_default_page_size_is_30(tmp_path, monkeypatch):
+    monkeypatch.delenv("RAPIDAPI_KEY", raising=False)
+    rc.init_rapidapi()
+    assert rc._page_size == 30
+
+
+# ── Multi-page search ──
+
+def test_search_page_param(configured):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = MOCK_SEARCH_RESPONSE
+
+    with patch("httpx.AsyncClient") as MockClient:
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_resp
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        MockClient.return_value = mock_client
+
+        run(rc.search_listings("iphone", page=3))
+
+    params = mock_client.get.call_args.kwargs.get("params", mock_client.get.call_args[1].get("params", {}))
+    assert params["page"] == "3"
+    assert params["page_size"] == "30"
 
 
 # ── .gitignore safety ──

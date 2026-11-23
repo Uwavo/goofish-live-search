@@ -12,7 +12,7 @@ RAPIDAPI_HOST = "goofish-xianyu-api-secondhand-deals-and-sellers.p.rapidapi.com"
 _api_key: str | None = None
 _calls_today: int = 0
 _calls_date: str = ""
-_page_size: int = 10
+_page_size: int = 30
 
 SETTINGS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "data", "rapidapi_settings.json"
@@ -64,7 +64,7 @@ def init_rapidapi() -> None:
     else:
         _calls_today = 0
         _calls_date = _today()
-    _page_size = settings.get("page_size", 10)
+    _page_size = settings.get("page_size", 30)
     if _api_key:
         log.info("RapidAPI key loaded (%d calls today, page_size=%d)", _calls_today, _page_size)
     else:
@@ -268,11 +268,36 @@ def normalize_item(raw: dict) -> dict:
 
     seller_raw = data.get("seller", data.get("sellerInfo", {}))
     if isinstance(seller_raw, dict):
-        seller = seller_raw.get("nick", seller_raw.get("nickname", seller_raw.get("sellerNick", "")))
-        location = seller_raw.get("area", seller_raw.get("location", data.get("city", data.get("area", data.get("location", "")))))
+        seller = (
+            seller_raw.get("nick")
+            or seller_raw.get("nickname")
+            or seller_raw.get("sellerNick")
+            or seller_raw.get("userNick")
+            or seller_raw.get("seller_nick")
+            or seller_raw.get("sellerName")
+            or ""
+        )
+        location = (
+            seller_raw.get("area")
+            or seller_raw.get("location")
+            or seller_raw.get("city")
+            or data.get("city")
+            or data.get("area")
+            or data.get("location")
+            or ""
+        )
     else:
-        seller = str(seller_raw) if seller_raw else data.get("sellerNick", "")
-        location = data.get("city", data.get("area", data.get("location", "")))
+        seller = str(seller_raw) if seller_raw else ""
+        location = data.get("city") or data.get("area") or data.get("location") or ""
+
+    if not seller:
+        seller = (
+            data.get("sellerNick")
+            or data.get("userNick")
+            or data.get("seller_nick")
+            or data.get("sellerName")
+            or ""
+        )
 
     condition = data.get("condition", "")
     specs = data.get("specs", {})
@@ -286,7 +311,14 @@ def normalize_item(raw: dict) -> dict:
         "location": location,
         "status": status,
         "url": f"https://www.goofish.com/item?id={item_id}" if item_id else "",
-        "description": data.get("desc", data.get("description", data.get("content", ""))),
+        "description": (
+            data.get("desc")
+            or data.get("description")
+            or data.get("itemDesc")
+            or data.get("summary")
+            or data.get("content")
+            or ""
+        ),
         "source": "rapidapi",
     }
     if condition:
