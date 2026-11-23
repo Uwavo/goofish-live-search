@@ -1,124 +1,224 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/FastAPI-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Playwright-2EAD33?style=flat-square&logo=playwright&logoColor=white" alt="Playwright">
+  <img src="https://img.shields.io/badge/tests-75%20passing-brightgreen?style=flat-square" alt="Tests">
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
+</p>
+
 # Goofish Live Search
 
-Dual-mode search engine for [Goofish (闲鱼)](https://www.goofish.com) — China's largest second-hand marketplace. Works in **Guest mode** (no account) or **Full Access** via Alipay QR login.
+A local dashboard for searching [Goofish (闲鱼)](https://www.goofish.com) — China's largest second-hand marketplace. Runs on `localhost:1212` with two modes: **Guest** (no account needed) and **Full Access** (Alipay QR login).
+
+Built for UK resellers who want to source from Goofish without navigating Chinese UI.
+
+---
 
 ## Features
 
-- **Dual-mode search** — Bing web index (guest) or real-time Goofish API (authenticated)
-- **Headless browser** — all background searches run silently, zero pop-ups
-- **Alipay QR login** — optional; opens a visible window only for the QR scan
-- **Auto translation** — English queries translated to Chinese via MyMemory API
-- **Deal scoring** — items scored 0-100 based on price vs median
-- **CNY → GBP conversion** — toggle dual-currency display
-- **Saved deals** — heart any listing, persisted in SQLite
-- **Anti-ban** — randomized 1.5-3.5s jitter, 15-min cache TTL, cooldown protection
-- **Spam filtering** — hides junk listings (维修, 主板坏, 配件机, etc.)
-- **Vinted-style UI** — polished dashboard with sidebar, category tabs, filters, detail drawer
+| | Guest Mode | Full Access |
+|---|---|---|
+| **Search** | Bing web index | Real-time Goofish API |
+| **Results** | ~10 per query | 20+ per query |
+| **Images** | No | Full galleries |
+| **Prices** | Extracted from snippets | Exact from API |
+| **Seller info** | No | Yes |
+| **Account needed** | No | Alipay QR scan |
 
-## How It Works
+**Both modes include:**
+- Auto English → Chinese translation (MyMemory API, cached in-memory)
+- Deal scoring (0–100 based on price vs median)
+- CNY → GBP conversion toggle
+- Save/unsave deals (persisted in SQLite)
+- Spam filtering (hides junk like 维修, 主板坏, 配件机)
+- Anti-ban protections (1.5–3.5s jitter, 15-min cache, cooldown on 403)
+- Category tabs (phones, electronics, computers, fashion, sneakers, cameras, gaming, home)
 
-### Guest Mode (No Account)
-1. Type an English or Chinese query
-2. Query is translated to Chinese via MyMemory API
-3. Bing is searched for `site:goofish.com/item <query>` across 2 pages
-4. Redirect links are followed to extract real item IDs
-5. Titles, descriptions, and prices extracted from Bing snippets
+---
 
-### Full Access (Alipay Linked)
-1. Click "Link Alipay Account" → scan QR code with Alipay app
-2. Session cookies saved locally to `./data/session_state.json`
-3. Searches use Goofish's internal `mtop` API for real-time results
-4. Full product images, exact prices, seller info, 20+ results
-
-## Architecture
-
-```
-Frontend (Tailwind CSS)  →  FastAPI Backend  →  Playwright Chromium (headless)
-                                                  ↓
-                              ┌─────────────────────────────────────┐
-                              │ Connected? → mtop API (real-time)   │
-                              │ Guest?     → Bing site: search      │
-                              └─────────────────────────────────────┘
-                                                  ↓
-                              Deal scoring + GBP conversion + SQLite
-```
-
-## Prerequisites
-
-- Python 3.10+
-- Windows/macOS/Linux
-
-## Setup
+## Quick Start
 
 ```bash
 git clone https://github.com/Uwavo/goofish-live-search.git
 cd goofish-live-search
 pip install -r requirements.txt
 playwright install chromium
-```
-
-## Run
-
-```bash
 python -m uvicorn backend.main:app --host 0.0.0.0 --port 1212 --loop asyncio
 ```
 
-Open [http://localhost:1212](http://localhost:1212)
+Open **http://localhost:1212**
 
-## API Endpoints
+---
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/api/health` | GET | Health check + browser + session status |
-| `/api/session/status` | GET | Guest / connected / expired |
-| `/api/session/login` | POST | Open Alipay QR login window |
-| `/api/session/logout` | POST | Clear session cookies |
-| `/api/search?q=keyword` | GET | Dual-mode search (params: min_price, max_price, sort, category, filter_spam) |
-| `/api/deals/save` | POST | Save a deal |
-| `/api/deals/{item_id}` | DELETE | Remove saved deal |
-| `/api/deals` | GET | List saved deals |
+## How It Works
+
+### Guest Mode
+```
+English query → MyMemory translation → Bing "site:goofish.com/item <query>"
+  → scrape 2 pages → follow redirects (3 concurrent) → extract IDs + prices
+```
+
+### Full Access
+```
+"Link Alipay Account" → visible browser opens → scan QR with Alipay app
+  → cookies saved to ./data/session_state.json
+  → verified against Goofish mtop API (real search probe)
+  → all future searches use mtop for real-time results
+```
+
+Session persists across restarts. On startup, the backend re-verifies the saved session via mtop — cookie files alone are never trusted.
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  Browser (localhost:1212)                                     │
+│  ┌─────────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
+│  │ Free Search  │  │   Live   │  │  Saved   │  │ Account  │ │
+│  │  (Bing)     │  │ (mtop)   │  │  Deals   │  │ (Alipay) │ │
+│  └──────┬──────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘ │
+└─────────┼──────────────┼─────────────┼──────────────┼────────┘
+          │              │             │              │
+          ▼              ▼             ▼              ▼
+┌──────────────────────────────────────────────────────────────┐
+│  FastAPI Backend (:1212)                                      │
+│                                                               │
+│  GET /api/search ──┐                                          │
+│                    ├─→ Verified? → mtop API (Playwright)      │
+│                    └─→ Guest?   → Bing scrape (Playwright)    │
+│                                                               │
+│  POST /api/session/login ──→ Visible Chromium + Alipay QR     │
+│  POST /api/deals/save ────→ SQLite (WAL mode)                 │
+│                                                               │
+│  CSRF: X-Requested-With header required on all mutations      │
+│  CORS: locked to localhost origins only                        │
+└──────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌──────────────────────────────────────────────────────────────┐
+│  ./data/                                                      │
+│  ├── session_state.json   (Alipay session cookies)            │
+│  ├── saved_deals.db       (SQLite — saved deals)              │
+│  ├── cache.db             (SQLite — search cache, 15min TTL)  │
+│  ├── browser_profile/     (Chromium persistent context)       │
+│  └── login_profile/       (Chromium login window context)     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## API Reference
+
+| Endpoint | Method | Auth | Description |
+|---|---|---|---|
+| `/api/health` | GET | — | Health check + browser/session status |
+| `/api/session/status` | GET | — | Returns `guest` or `connected` |
+| `/api/session/login` | POST | CSRF | Opens Alipay QR login window |
+| `/api/session/logout` | POST | CSRF | Clears session + cookies |
+| `/api/search` | GET | — | Dual-mode search (auto-selects guest/live) |
+| `/api/search/live` | GET | Verified | Live search only (401 if not connected) |
+| `/api/deals/save` | POST | CSRF | Save a deal (validated with Pydantic) |
+| `/api/deals/{item_id}` | DELETE | CSRF | Remove a saved deal |
+| `/api/deals` | GET | — | List all saved deals |
+
+**Search parameters:** `q` (required), `min_price`, `max_price`, `sort` (relevance/price_asc/price_desc/deal), `category`, `filter_spam`, `include_sold`, `page`
+
+**CSRF:** State-changing endpoints require `X-Requested-With: XMLHttpRequest` header.
+
+---
+
+## Security
+
+- **No XSS** — all DOM rendering uses `createElement` + `textContent`, zero `innerHTML` with user data
+- **CSRF protection** — custom header check on all POST/DELETE endpoints
+- **CORS locked** — only `localhost:1212` / `127.0.0.1:1212` / `0.0.0.0:1212`
+- **Input validation** — Pydantic models with field length limits on all write endpoints
+- **No credentials stored** — Alipay login happens in a sandboxed browser; no passwords touch the backend
+- **Session verification** — mtop API probe on every startup; cookie files alone never grant access
+- **Concurrency safe** — `asyncio.Lock` on session state, SQLite WAL mode with 10s timeout
+
+---
 
 ## Tests
 
 ```bash
-# Unit tests (48 tests)
+# Run all unit tests (75 tests)
 python -m pytest tests/ --ignore=tests/test_live.py --ignore=tests/test_e2e.py -q
 
-# E2E test (requires running server + Chromium)
+# E2E tests (requires running server)
 python -m pytest tests/test_e2e.py -v
 ```
 
-## Limitations
+**Coverage:** cookie validation, placeholder rejection, session gating, route locking, deal scoring, price parsing, URL normalisation, cache TTL, SQLite roundtrips, WAL mode init, price filter edge cases.
 
-- **No product images in guest mode** — Goofish blocks item content without login
-- **~10 results per query in guest mode** — limited by Bing's index of goofish.com
-- **Price extraction is best-effort** — prices only appear in Bing snippet text
+---
 
 ## Project Structure
 
 ```
 backend/
-  main.py           — FastAPI app + lifespan
-  routes.py         — All API endpoints (search, session, deals)
-  discovery.py      — Bing multi-page search + redirect following
-  browser_engine.py — Playwright headless engine + session management
-  translator.py     — English→Chinese via MyMemory API
-  normalizer.py     — Price parsing, image URL cleaning
-  currency.py       — CNY↔GBP conversion
-  deals.py          — Deal scoring + SQLite saved deals
-  cache.py          — In-memory TTL cache (15 min)
-  config.py         — All settings (port, jitter, categories, spam keywords)
+├── main.py             FastAPI app, lifespan (DB init + browser)
+├── routes.py           All API endpoints + Pydantic models
+├── browser_engine.py   Playwright engine, session mgmt, mtop verification
+├── discovery.py        Bing scraping + parallel redirect resolution
+├── translator.py       English→Chinese (MyMemory, LRU cached)
+├── normalizer.py       Price parsing, image URLs, listing normalisation
+├── currency.py         CNY↔GBP conversion
+├── deals.py            Deal scoring + SQLite persistence
+├── cache.py            SQLite TTL cache (15 min)
+└── config.py           All settings (port, jitter, categories, spam words)
+
 frontend/
-  index.html        — Vinted-style dashboard (Tailwind CSS)
-  app.js            — Search, cards, drawer, session, saved deals
+├── index.html          Dashboard UI (Tailwind CSS)
+└── app.js              Search, cards, drawer, session, saved deals
+
 tests/
-  test_*.py         — 48 unit tests
-  test_e2e.py       — Playwright E2E tests
-data/               — (gitignored) session state + saved deals DB
+├── test_session.py     Cookie validation + session state (17 tests)
+├── test_routes_lock.py Full Access gating (2 tests)
+├── test_deals.py       Deal scoring + SQLite + DB init (12 tests)
+├── test_normalizer.py  Price/URL/filter tests (16 tests)
+├── test_discovery.py   Bing scraping + price extraction
+├── test_currency.py    CNY/GBP conversion
+├── test_translator.py  Translation detection
+├── test_cache.py       Cache TTL + DB init
+└── test_e2e.py         Playwright E2E (requires server)
+
+data/                   (gitignored) runtime state
 ```
+
+---
+
+## Configuration
+
+All settings via environment variables or `backend/config.py`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `1212` | Server port |
+| `CNY_GBP_RATE` | `0.11` | Exchange rate for price display |
+| `CACHE_TTL` | `900` | Search cache TTL in seconds |
+| `RATE_LIMIT` | `6` | Max searches per minute |
+| `BROWSER_TIMEOUT` | `30000` | Playwright timeout (ms) |
+| `NAV_TIMEOUT` | `20000` | Page navigation timeout (ms) |
+
+---
+
+## Limitations
+
+- **No images in guest mode** — Goofish blocks item content without login
+- **~10 results in guest mode** — limited by Bing's index coverage
+- **Guest prices are best-effort** — extracted from Bing snippet text
+- **Alipay app required for Full Access** — no username/password login supported
+- **Single user** — designed for local use, not multi-tenant
+
+---
 
 ## Tech Stack
 
-- **Backend:** Python, FastAPI, Playwright, SQLite
-- **Frontend:** HTML, Tailwind CSS, vanilla JavaScript
-- **Testing:** pytest (48 unit tests)
+**Backend:** Python 3.10+, FastAPI, Playwright, SQLite (WAL), Pydantic v2
+
+**Frontend:** HTML5, Tailwind CSS, vanilla JavaScript (no framework)
+
+**Testing:** pytest, 75 unit tests
