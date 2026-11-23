@@ -5,6 +5,7 @@ import os
 import random
 import time
 from typing import Any
+from urllib.parse import quote_plus
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 
@@ -30,6 +31,7 @@ _cooldown_until = 0.0
 _verified_connected = False
 
 PROFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "browser_profile")
+LOGIN_PROFILE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "login_profile")
 
 AUTH_COOKIE_NAMES = ("cookie2", "unb", "sgcookie")
 GUEST_COOKIE_NAMES = ("cna", "_m_h5_tk", "_m_h5_tk_enc", "t")
@@ -76,50 +78,17 @@ async def init_browser() -> None:
     await _context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
+    # On startup: load cookies then run REAL mtop verification
+    _verified_connected = False
     if _session_exists():
         await _load_session_cookies()
-        if _has_auth_cookies_in_state():
-            verified = await _verify_session_live()
-            _verified_connected = verified
-            log.info("Session restored on startup: %s", "connected" if verified else "expired")
+        verified = await _verify_session_with_mtop()
+        _verified_connected = verified
+        if not verified:
+            log.info("Startup: session_state.json exists but mtop verification failed — staying guest")
         else:
-            _verified_connected = False
+            log.info("Startup: session verified via mtop — Full Access active")
     _warmed_up = False
-
-
-def _has_auth_cookies_in_state() -> bool:
-    try:
-        with open(SESSION_STATE_PATH, "r") as f:
-            state = json.load(f)
-        return _has_auth_cookies(state.get("cookies", []))
-    except Exception:
-        return False
-
-
-async def _verify_session_live() -> bool:
-    if not _context:
-        return False
-    page = await _context.new_page()
-    try:
-        await page.goto(GOOFISH_BASE, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
-        await page.wait_for_timeout(3000)
-
-        cookies = await _context.cookies()
-        if not _has_auth_cookies(cookies):
-            return False
-
-        # Check for session expired signals in network responses
-        content = await page.content()
-        if "SESSION_EXPIRED" in content or "FAIL_SYS_SESSION_EXPIRED" in content:
-            log.warning("Live verification: session expired")
-            return False
-
-        return True
-    except Exception as e:
-        log.warning("Session verification failed: %s", e)
-        return False
-    finally:
-        await page.close()
 
 
 async def close_browser() -> None:
@@ -171,25 +140,83 @@ async def clear_session() -> None:
     log.info("Session cleared")
 
 
+def _delete_session_file() -> None:
+    if os.path.isfile(SESSION_STATE_PATH):
+        os.remove(SESSION_STATE_PATH)
+        log.info("Deleted session_state.json")
+
+
 def get_session_status() -> str:
-    if _verified_connected:
-        return "connected"
-    if not _session_exists():
-        return "guest"
-    try:
-        with open(SESSION_STATE_PATH, "r") as f:
-            state = json.load(f)
-        cookies = state.get("cookies", [])
-        if _has_auth_cookies(cookies):
-            return "connected"
-        return "guest"
-    except Exception:
-        return "guest"
+    return "connected" if _verified_connected else "guest"
 
 
 def is_verified_connected() -> bool:
     return _verified_connected
 
+
+# ── mtop verification probe ──
+
+async def _verify_session_with_mtop() -> bool:
+    """Run a REAL search against Goofish's mtop API to prove the session works.
+    Returns True only if we get real items back (no SESSION_EXPIRED)."""
+    if not _context:
+        return False
+
+    cookies = await _context.cookies()
+    if not _has_auth_cookies(cookies):
+        log.info("mtop verify: no auth cookies present")
+        return False
+
+    page = await _context.new_page()
+    captured_success = []
+    session_expired = []
+
+    async def on_response(response):
+        try:
+            url = response.url
+            if "mtop" not in url and "h5api" not in url:
+                return
+            ct = response.headers.get("content-type", "")
+            if "json" not in ct and "javascript" not in ct:
+                return
+            body = await response.text()
+            if body.startswith(")]}'\n"):
+                body = body[5:]
+            data = json.loads(body)
+            ret_str = str(data.get("ret", []))
+            if "FAIL_SYS_SESSION_EXPIRED" in ret_str or "SESSION_EXPIRED" in ret_str:
+                session_expired.append(True)
+            elif "SUCCESS" in ret_str:
+                items = _find_items_in_data(data.get("data", {}))
+                if items:
+                    captured_success.append(True)
+        except Exception:
+            pass
+
+    page.on("response", on_response)
+
+    try:
+        search_url = f"{GOOFISH_BASE}/search?q={quote_plus('手机')}"
+        await page.goto(search_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
+        await page.wait_for_timeout(6000)
+
+        if session_expired:
+            log.warning("mtop verify: FAIL_SYS_SESSION_EXPIRED returned")
+            return False
+        if captured_success:
+            log.info("mtop verify: got real items — session is valid")
+            return True
+
+        log.warning("mtop verify: no items and no explicit error — treating as failed")
+        return False
+    except Exception as e:
+        log.warning("mtop verify error: %s", e)
+        return False
+    finally:
+        await page.close()
+
+
+# ── Jitter / cooldown / warmup ──
 
 async def _jitter() -> None:
     delay = random.uniform(REQUEST_JITTER_MIN, REQUEST_JITTER_MAX)
@@ -221,6 +248,8 @@ async def _warmup_session() -> None:
     _warmed_up = True
 
 
+# ── Data parsing ──
+
 def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
     if depth > 10 or data is None:
         return []
@@ -247,6 +276,8 @@ def _find_items_in_data(data: Any, depth: int = 0) -> list[dict]:
                 return found
     return []
 
+
+# ── Authenticated search ──
 
 async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | None:
     if not _context or not _verified_connected:
@@ -276,7 +307,7 @@ async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | 
             ret_str = str(ret_list)
 
             if "SESSION_EXPIRED" in ret_str:
-                log.warning("Session expired")
+                log.warning("Session expired during search")
                 return
 
             if "SUCCESS" in ret_str:
@@ -289,7 +320,6 @@ async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | 
     page.on("response", on_response)
 
     try:
-        from urllib.parse import quote_plus
         search_url = f"{GOOFISH_BASE}/search?q={quote_plus(query)}"
         await page.goto(search_url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT_MS)
         await page.wait_for_timeout(5000)
@@ -319,25 +349,37 @@ async def search_authenticated(query: str, max_items: int = 20) -> list[dict] | 
         await page.close()
 
 
-async def open_login_window() -> dict:
-    """Open a VISIBLE browser window for Alipay QR login with 5-minute timeout.
+# ── Login window ──
 
-    The window stays open until:
-    - User manually closes it, OR
-    - All conditions met: 5s elapsed, real cookie2+unb present, redirected back to goofish.com
+async def open_login_window() -> dict:
+    """Open a VISIBLE browser for Alipay QR login. NO auto-close timeout.
+
+    Before opening:
+    - Deletes session_state.json
+    - Clears all cookies in the login profile
+
+    Window stays open INDEFINITELY until either:
+    - User closes the browser -> returns error "You need to sign in"
+    - Login completes + mtop verification passes -> saves session, returns connected
     """
     global _verified_connected
 
     if not _playwright:
         return {"success": False, "error": "Browser not initialized"}
 
-    login_profile = os.path.join(os.path.dirname(PROFILE_DIR), "login_profile")
-    os.makedirs(login_profile, exist_ok=True)
+    # 1. Wipe stale auth state BEFORE opening login
+    _delete_session_file()
+    _verified_connected = False
+    if _context:
+        await _context.clear_cookies()
+        log.info("Cleared headless context cookies before login")
+
+    os.makedirs(LOGIN_PROFILE_DIR, exist_ok=True)
 
     login_ctx = None
     try:
         login_ctx = await _playwright.chromium.launch_persistent_context(
-            user_data_dir=login_profile,
+            user_data_dir=LOGIN_PROFILE_DIR,
             headless=False,
             args=[
                 "--disable-blink-features=AutomationControlled",
@@ -349,102 +391,95 @@ async def open_login_window() -> dict:
             ignore_default_args=["--enable-automation"],
         )
 
+        # Clear any stale cookies in the login profile too
+        await login_ctx.clear_cookies()
+        log.info("Cleared login profile cookies")
+
         page = login_ctx.pages[0] if login_ctx.pages else await login_ctx.new_page()
         await page.goto(f"{GOOFISH_BASE}/login", wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(2500)
 
-        # Try to click the Alipay login tab on the page and in iframes
         await _click_alipay_tab(page)
 
-        start_time = time.time()
         window_closed = False
 
-        # Track if user closes the browser window
         def on_close():
             nonlocal window_closed
             window_closed = True
 
         login_ctx.on("close", on_close)
 
-        # Poll for auth cookies — use asyncio.sleep instead of page.wait_for_timeout
-        # so we don't crash if the page navigates or a new tab opens
-        for tick in range(300):
+        # 2. Poll INDEFINITELY (no timeout) — only exit on window close or verified login
+        while True:
             if window_closed:
                 log.info("User closed the login window")
-                return {"success": False, "error": "Login window was closed"}
+                return {"success": False, "error": "You need to sign in"}
 
             await asyncio.sleep(1)
 
-            elapsed = time.time() - start_time
-            if elapsed < 5:
-                continue
+            if window_closed:
+                return {"success": False, "error": "You need to sign in"}
 
-            # Check cookies across ALL domains in the context
+            # Check cookies across all domains
             try:
                 cookies = await login_ctx.cookies()
             except Exception:
                 if window_closed:
-                    return {"success": False, "error": "Login window was closed"}
+                    return {"success": False, "error": "You need to sign in"}
                 continue
 
             if not _has_auth_cookies(cookies):
                 continue
 
-            # Check if any page in the context is back on goofish.com
+            # Must be back on goofish.com (not still on alipay.com)
             try:
-                pages = login_ctx.pages
+                on_goofish = any(_is_on_goofish(p.url) for p in login_ctx.pages)
             except Exception:
                 continue
 
-            on_goofish = any(_is_on_goofish(p.url) for p in pages)
             if not on_goofish:
-                log.debug("Auth cookies found but still on login/alipay page, waiting for redirect...")
                 continue
 
-            # All conditions met — wait for cookies to settle
+            # Let cookies settle
             await asyncio.sleep(2)
+            if window_closed:
+                return {"success": False, "error": "You need to sign in"}
+
             try:
                 cookies = await login_ctx.cookies()
-            except Exception:
-                continue
-
-            # Save session
-            try:
                 state = await login_ctx.storage_state()
             except Exception:
                 continue
 
+            # Save state temporarily
             os.makedirs(os.path.dirname(SESSION_STATE_PATH), exist_ok=True)
             with open(SESSION_STATE_PATH, "w") as f:
                 json.dump(state, f, indent=2)
 
-            # Inject cookies into the headless search context
+            # Inject cookies into the headless context
             if _context:
                 relevant = [c for c in cookies
                             if c.get("domain", "").endswith(("goofish.com", "taobao.com", "alipay.com"))]
                 if relevant:
                     await _context.add_cookies(relevant)
 
-            # Live verify before marking connected
-            verified = await _verify_session_live()
+            # 3. REAL mtop verification — the only way to get Full Access
+            verified = await _verify_session_with_mtop()
             if verified:
                 _verified_connected = True
-                log.info("Login successful and verified, session saved")
+                log.info("Login + mtop verification SUCCESS — Full Access granted")
                 try:
                     await login_ctx.close()
                 except Exception:
                     pass
                 return {"success": True, "status": "connected"}
             else:
-                log.warning("Auth cookies present but live verification failed")
+                # Verification failed — delete the bad session, keep polling
+                _delete_session_file()
+                if _context:
+                    await _context.clear_cookies()
+                log.warning("Auth cookies appeared but mtop verification FAILED — keeping window open")
                 continue
-
-        log.warning("Login timed out after 5 minutes")
-        try:
-            await login_ctx.close()
-        except Exception:
-            pass
-        return {"success": False, "error": "Login timed out (5 minutes). Please try again."}
 
     except Exception as e:
         log.error("Login error: %s", e)
