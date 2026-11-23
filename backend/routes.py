@@ -108,9 +108,10 @@ async def search(
             source = "goofish_live"
 
     # Priority 2: RapidAPI search (real images, exact prices, native filters)
+    # Pass original query — RapidAPI accepts English directly
     if not items and rapidapi_is_configured():
         items = await rapidapi_search(
-            translated,
+            q,
             page=page,
             min_price=min_price,
             max_price=max_price,
